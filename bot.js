@@ -135,9 +135,11 @@ bot.onText(/\/earnings (.+)/, async (msg, match) => {
   }
 });
 
-// Help command - UPDATED with support contact
+// Help command - FIXED with better error handling
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
+  console.log('✅ Received /help from:', chatId);
+  
   const helpMessage = `🤖 **Earnings Bot Help**\n\n` +
                      `/start - Start the bot\n` +
                      `/earnings MEMBER_ID - Check your earnings\n` +
@@ -145,24 +147,42 @@ bot.onText(/\/help/, (msg) => {
                      `/help - Show this help message\n\n` +
                      `Contact support: @starlifeadvert`;
   
-  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' })
+    .then(() => console.log('✅ Sent help message to:', chatId))
+    .catch(error => {
+      console.log('❌ Error sending help message:', error.message);
+      // Try sending without markdown if markdown fails
+      const plainHelpMessage = `🤖 Earnings Bot Help\n\n` +
+                             `/start - Start the bot\n` +
+                             `/earnings MEMBER_ID - Check your earnings\n` +
+                             `/register - Registration information\n` +
+                             `/help - Show this help message\n\n` +
+                             `Contact support: @starlifeadvert`;
+      
+      bot.sendMessage(chatId, plainHelpMessage)
+        .then(() => console.log('✅ Sent plain help message to:', chatId))
+        .catch(error2 => console.log('❌ Error sending plain help message:', error2.message));
+    });
+});
+
+// Handle unknown commands
+bot.on('message', (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+  
+  // Only respond to command-like messages that start with /
+  if (text && text.startsWith('/') && 
+      !text.startsWith('/start') && 
+      !text.startsWith('/earnings') && 
+      !text.startsWith('/register') && 
+      !text.startsWith('/help')) {
+    
+    console.log('❓ Received unknown command:', text);
+    bot.sendMessage(chatId, '❓ Unknown command. Use /help to see available commands.')
+      .then(() => console.log('✅ Sent unknown command message to:', chatId))
+      .catch(error => console.log('❌ Error sending unknown command message:', error.message));
+  }
 });
 
 // Handle process cleanup
-process.on('SIGTERM', () => {
-  console.log('🛑 Received SIGTERM, shutting down gracefully');
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', () => {
-  console.log('🛑 Received SIGINT, shutting down gracefully');
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
-});
-
-console.log('✅ Bot setup complete - waiting for messages...');
+process.on('SIGTERM', () =>
