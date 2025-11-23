@@ -88,11 +88,22 @@ bot.onText(/\/start/, (msg) => {
   
   const welcomeMessage = `👋 Welcome to Earnings Bot!\n\n` +
                         `Use /earnings YOUR_MEMBER_ID to check your earnings\n` +
-                        `Example: /earnings SLA-123`;
+                        `Example: /earnings SLA-123\n` +
+                        `Use /register to sign up\n` +
+                        `Use /help for assistance`;
   
   bot.sendMessage(chatId, welcomeMessage)
     .then(() => console.log('✅ Sent welcome message to:', chatId))
     .catch(error => console.log('❌ Error sending welcome:', error.message));
+});
+
+// Register command
+bot.onText(/\/register/, (msg) => {
+  const chatId = msg.chat.id;
+  console.log('✅ Received /register from:', chatId);
+  bot.sendMessage(chatId, 'Please use the web interface for registration.')
+    .then(() => console.log('✅ Sent register message to:', chatId))
+    .catch(error => console.log('❌ Error sending register message:', error.message));
 });
 
 // Earnings command
@@ -130,6 +141,7 @@ bot.onText(/\/help/, (msg) => {
   const helpMessage = `🤖 **Earnings Bot Help**\n\n` +
                      `/start - Start the bot\n` +
                      `/earnings MEMBER_ID - Check your earnings\n` +
+                     `/register - Registration information\n` +
                      `/help - Show this help message`;
   
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
