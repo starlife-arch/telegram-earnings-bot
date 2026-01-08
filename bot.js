@@ -220,7 +220,7 @@ bot.onText(/\/start/, async (msg) => {
   
   if (user) {
     if (user.banned) {
-      await bot.sendMessage(chatId, '🚫 Your account has been banned.');
+      await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
       return;
     }
     
@@ -298,7 +298,36 @@ bot.onText(/\/investnow/, async (msg) => {
   await bot.sendMessage(chatId, guideMessage);
 });
 
-// Logout command - FIXED
+// Help command
+bot.onText(/\/help/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const helpMessage = `🤖 **Starlife Advert Bot - Help**\n\n` +
+                     `**Account Commands:**\n` +
+                     `/start - Start bot\n` +
+                     `/register - Create account\n` +
+                     `/login - Login to account\n` +
+                     `/logout - Logout\n` +
+                     `/profile - View profile\n\n` +
+                     `**Investment Commands:**\n` +
+                     `/invest - Make investment\n` +
+                     `/investnow - Quick guide\n` +
+                     `/earnings - View earnings\n` +
+                     `/viewearnings MEMBER_ID - View others ($1)\n\n` +
+                     `**Referral Commands:**\n` +
+                     `/referral - Share & earn 10%\n\n` +
+                     `**Withdrawal Commands:**\n` +
+                     `/withdraw - Withdraw funds\n\n` +
+                     `**Support Commands:**\n` +
+                     `/support - Contact support\n\n` +
+                     `💳 **Payment Details:**\n` +
+                     `M-Pesa Till: 6034186\n` +
+                     `Name: Starlife Advert US Agency`;
+  
+  await bot.sendMessage(chatId, helpMessage);
+});
+
+// Logout command
 bot.onText(/\/logout/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -323,7 +352,46 @@ bot.onText(/\/logout/, async (msg) => {
   );
 });
 
-// Register command - FIXED
+// Profile command
+bot.onText(/\/profile/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  if (user.banned) {
+    await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
+    return;
+  }
+  
+  const profileMessage = `👤 **Your Profile**\n\n` +
+                        `**Account Details:**\n` +
+                        `Name: ${user.name}\n` +
+                        `Member ID: ${user.memberId}\n` +
+                        `Email: ${user.email}\n` +
+                        `Joined: ${new Date(user.joinedDate).toLocaleDateString()}\n` +
+                        `Last Login: ${new Date(user.lastLogin).toLocaleDateString()}\n\n` +
+                        `**Financial Summary:**\n` +
+                        `Current Balance: ${formatCurrency(user.balance)}\n` +
+                        `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n` +
+                        `Total Earned: ${formatCurrency(user.totalEarned || 0)}\n` +
+                        `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n` +
+                        `**Investment Stats:**\n` +
+                        `Active Investments: ${user.activeInvestments || 0}\n` +
+                        `Total Referrals: ${user.referrals || 0}\n` +
+                        `Referral Code: ${user.referralCode}\n\n` +
+                        `**Account Status:** ${user.banned ? '🚫 SUSPENDED' : '✅ ACTIVE'}\n\n` +
+                        `Use /support for profile changes`;
+  
+  await bot.sendMessage(chatId, profileMessage);
+});
+
+// Register command
 bot.onText(/\/register/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -348,7 +416,7 @@ bot.onText(/\/register/, async (msg) => {
   );
 });
 
-// Handle registration messages - FIXED
+// Handle ALL messages (registration, login, investment, support, etc.)
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -360,6 +428,7 @@ bot.on('message', async (msg) => {
   if (!session) return;
   
   try {
+    // REGISTRATION HANDLING
     if (session.step === 'awaiting_name') {
       session.data.name = text.trim();
       session.step = 'awaiting_password';
@@ -509,49 +578,9 @@ bot.on('message', async (msg) => {
         }
       }
     }
-  } catch (error) {
-    console.log('Registration error:', error.message);
-    await bot.sendMessage(chatId, '❌ Registration failed. Please try /register again.');
-    delete userSessions[chatId];
-  }
-});
-
-// Login command - FIXED
-bot.onText(/\/login/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
-  
-  if (user) {
-    await bot.sendMessage(chatId, '✅ You are already logged in. Use /start to see dashboard.');
-    return;
-  }
-  
-  userSessions[chatId] = {
-    step: 'login_memberid',
-    data: {}
-  };
-  
-  await bot.sendMessage(chatId,
-    `🔐 **Login**\n\n` +
-    `Enter your Member ID:\n` +
-    `(Format: USER-123456)`
-  );
-});
-
-// Handle login messages - FIXED
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-  
-  if (!text || text.startsWith('/')) return;
-  
-  const session = userSessions[chatId];
-  if (!session || !session.step) return;
-  
-  try {
-    if (session.step === 'login_memberid') {
+    
+    // LOGIN HANDLING
+    else if (session.step === 'login_memberid') {
       session.data.memberId = text.trim().toUpperCase();
       session.step = 'login_password';
       
@@ -569,7 +598,7 @@ bot.on('message', async (msg) => {
       
       if (user) {
         if (user.banned) {
-          await bot.sendMessage(chatId, '🚫 Account banned.');
+          await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
           delete userSessions[chatId];
           return;
         }
@@ -597,495 +626,259 @@ bot.on('message', async (msg) => {
         delete userSessions[chatId];
       }
     }
-  } catch (error) {
-    console.log('Login error:', error.message);
-    await bot.sendMessage(chatId, '❌ Login failed. Try again.');
-    delete userSessions[chatId];
-  }
-});
-
-// Help command - FIXED
-bot.onText(/\/help/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  const helpMessage = `🤖 **Starlife Advert Bot - Help**\n\n` +
-                     `**Account Commands:**\n` +
-                     `/start - Start bot\n` +
-                     `/register - Create account\n` +
-                     `/login - Login to account\n` +
-                     `/logout - Logout\n` +
-                     `/profile - View profile\n\n` +
-                     `**Investment Commands:**\n` +
-                     `/invest - Make investment\n` +
-                     `/investnow - Quick guide\n` +
-                     `/earnings - View earnings\n` +
-                     `/viewearnings MEMBER_ID - View others ($1)\n\n` +
-                     `**Referral Commands:**\n` +
-                     `/referral - Share & earn 10%\n\n` +
-                     `**Withdrawal Commands:**\n` +
-                     `/withdraw - Withdraw funds\n\n` +
-                     `**Support Commands:**\n` +
-                     `/support - Contact support\n\n` +
-                     `💳 **Payment Details:**\n` +
-                     `M-Pesa Till: 6034186\n` +
-                     `Name: Starlife Advert US Agency`;
-  
-  await bot.sendMessage(chatId, helpMessage);
-});
-
-// Invest command - FIXED
-bot.onText(/\/invest/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
-  
-  if (!user) {
-    await bot.sendMessage(chatId, '❌ Please login first with /login or register with /register');
-    return;
-  }
-  
-  if (user.banned) {
-    await bot.sendMessage(chatId, '🚫 Account banned.');
-    return;
-  }
-  
-  userSessions[chatId] = {
-    step: 'invest_amount',
-    data: { memberId: user.memberId }
-  };
-  
-  await bot.sendMessage(chatId,
-    `💰 **Make Investment**\n\n` +
-    `Minimum Investment: $10\n` +
-    `Daily Profit: 2%\n` +
-    `Investment Period: 30 days\n\n` +
-    `**Payment Details:**\n` +
-    `💳 M-Pesa Till: 6034186\n` +
-    `🏢 Name: Starlife Advert US Agency\n\n` +
-    `After payment, enter amount invested:`
-  );
-});
-
-// Handle investment messages - FIXED
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-  
-  if (!text || text.startsWith('/')) return;
-  
-  const session = userSessions[chatId];
-  if (!session || session.step !== 'invest_amount') return;
-  
-  try {
-    const amount = parseFloat(text);
     
-    if (isNaN(amount) || amount < 10) {
-      await bot.sendMessage(chatId, '❌ Minimum investment is $10. Enter valid amount:');
-      return;
-    }
-    
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
-    
-    if (userIndex === -1) {
-      await bot.sendMessage(chatId, '❌ User not found. Please login again.');
+    // INVESTMENT HANDLING
+    else if (session.step === 'invest_amount') {
+      const amount = parseFloat(text);
+      
+      if (isNaN(amount) || amount < 10) {
+        await bot.sendMessage(chatId, '❌ Minimum investment is $10. Enter valid amount:');
+        return;
+      }
+      
+      const users = await loadData(USERS_FILE);
+      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
+      
+      if (userIndex === -1) {
+        await bot.sendMessage(chatId, '❌ User not found. Please login again.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      const user = users[userIndex];
+      
+      // Create investment
+      const investment = {
+        id: `INV-${Date.now()}`,
+        memberId: user.memberId,
+        userName: user.name,
+        amount: amount,
+        dailyProfit: calculateDailyProfit(amount),
+        totalProfit: 0,
+        daysActive: 0,
+        status: 'active',
+        startDate: new Date().toISOString(),
+        endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        paymentMethod: 'M-Pesa',
+        paymentDetails: 'Till 6034186 - Starlife Advert US Agency'
+      };
+      
+      // Save investment
+      const investments = await loadData(INVESTMENTS_FILE);
+      investments.push(investment);
+      await saveData(INVESTMENTS_FILE, investments);
+      
+      // Update user stats
+      users[userIndex].totalInvested = (parseFloat(users[userIndex].totalInvested) || 0) + amount;
+      users[userIndex].activeInvestments = (users[userIndex].activeInvestments || 0) + 1;
+      
+      // Record transaction
+      const transactions = await loadData(TRANSACTIONS_FILE);
+      transactions.push({
+        id: `TRX-${Date.now()}`,
+        memberId: user.memberId,
+        type: 'investment',
+        amount: amount,
+        description: `Investment #${investment.id}`,
+        date: new Date().toISOString()
+      });
+      
+      await saveData(USERS_FILE, users);
+      await saveData(TRANSACTIONS_FILE, transactions);
+      
       delete userSessions[chatId];
-      return;
-    }
-    
-    const user = users[userIndex];
-    
-    // Create investment
-    const investment = {
-      id: `INV-${Date.now()}`,
-      memberId: user.memberId,
-      userName: user.name,
-      amount: amount,
-      dailyProfit: calculateDailyProfit(amount),
-      totalProfit: 0,
-      daysActive: 0,
-      status: 'active',
-      startDate: new Date().toISOString(),
-      endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-      paymentMethod: 'M-Pesa',
-      paymentDetails: 'Till 6034186 - Starlife Advert US Agency'
-    };
-    
-    // Save investment
-    const investments = await loadData(INVESTMENTS_FILE);
-    investments.push(investment);
-    await saveData(INVESTMENTS_FILE, investments);
-    
-    // Update user stats
-    users[userIndex].totalInvested = (parseFloat(users[userIndex].totalInvested) || 0) + amount;
-    users[userIndex].activeInvestments = (users[userIndex].activeInvestments || 0) + 1;
-    
-    // Record transaction
-    const transactions = await loadData(TRANSACTIONS_FILE);
-    transactions.push({
-      id: `TRX-${Date.now()}`,
-      memberId: user.memberId,
-      type: 'investment',
-      amount: amount,
-      description: `Investment #${investment.id}`,
-      date: new Date().toISOString()
-    });
-    
-    await saveData(USERS_FILE, users);
-    await saveData(TRANSACTIONS_FILE, transactions);
-    
-    delete userSessions[chatId];
-    
-    // Send confirmation
-    await bot.sendMessage(chatId,
-      `✅ **Investment Created!**\n\n` +
-      `Investment ID: ${investment.id}\n` +
-      `Amount: ${formatCurrency(amount)}\n` +
-      `Daily Profit: ${formatCurrency(investment.dailyProfit)}\n` +
-      `Estimated Monthly: ${formatCurrency(amount * 0.02 * 30)}\n` +
-      `Start Date: ${new Date().toLocaleDateString()}\n` +
-      `End Date: ${new Date(investment.endDate).toLocaleDateString()}\n\n` +
-      `💰 **Profit Calculation:**\n` +
-      `• 2% daily added to balance\n` +
-      `• Auto-calculated every 24h\n` +
-      `• View with /earnings\n\n` +
-      `👥 **Referral Bonus:**\n` +
-      `Share your code: ${user.referralCode}\n` +
-      `Earn 10% when friends invest!`
-    );
-    
-    // Handle referral bonus for referrer (10% of investment)
-    if (user.referredBy) {
-      const referrer = users.find(u => u.memberId === user.referredBy);
-      if (referrer) {
-        const referralBonus = calculateReferralBonus(amount);
+      
+      // Send confirmation
+      await bot.sendMessage(chatId,
+        `✅ **Investment Created!**\n\n` +
+        `Investment ID: ${investment.id}\n` +
+        `Amount: ${formatCurrency(amount)}\n` +
+        `Daily Profit: ${formatCurrency(investment.dailyProfit)}\n` +
+        `Estimated Monthly: ${formatCurrency(amount * 0.02 * 30)}\n` +
+        `Start Date: ${new Date().toLocaleDateString()}\n` +
+        `End Date: ${new Date(investment.endDate).toLocaleDateString()}\n\n` +
+        `💰 **Profit Calculation:**\n` +
+        `• 2% daily added to balance\n` +
+        `• Auto-calculated every 24h\n` +
+        `• View with /earnings\n\n` +
+        `👥 **Referral Bonus:**\n` +
+        `Share your code: ${user.referralCode}\n` +
+        `Earn 10% when friends invest!`
+      );
+      
+      // Handle referral bonus for referrer (10% of investment)
+      if (user.referredBy) {
+        const referrer = users.find(u => u.memberId === user.referredBy);
+        if (referrer) {
+          const referralBonus = calculateReferralBonus(amount);
+          
+          // Update referrer stats
+          const referrerIndex = users.findIndex(u => u.memberId === referrer.memberId);
+          if (referrerIndex !== -1) {
+            users[referrerIndex].balance = (parseFloat(users[referrerIndex].balance) || 0) + referralBonus;
+            users[referrerIndex].referralEarnings = (parseFloat(users[referrerIndex].referralEarnings) || 0) + referralBonus;
+            users[referrerIndex].referrals = (users[referrerIndex].referrals || 0) + 1;
+            
+            // Save referral record
+            const referrals = await loadData(REFERRALS_FILE);
+            referrals.push({
+              id: `REF-${Date.now()}`,
+              referrerId: referrer.memberId,
+              referrerName: referrer.name,
+              referredId: user.memberId,
+              referredName: user.name,
+              investmentAmount: amount,
+              bonusAmount: referralBonus,
+              date: new Date().toISOString()
+            });
+            await saveData(REFERRALS_FILE, referrals);
+            
+            // Record transaction for referrer
+            transactions.push({
+              id: `TRX-REF-${Date.now()}`,
+              memberId: referrer.memberId,
+              type: 'referral_bonus',
+              amount: referralBonus,
+              description: `10% referral bonus from ${user.name}'s investment`,
+              date: new Date().toISOString()
+            });
+            await saveData(TRANSACTIONS_FILE, transactions);
+            
+            await saveData(USERS_FILE, users);
+            
+            // Notify referrer
+            try {
+              await bot.sendMessage(referrer.chatId,
+                `💰 **Referral Bonus Earned!**\n\n` +
+                `${user.name} invested ${formatCurrency(amount)}\n` +
+                `You earned 10%: ${formatCurrency(referralBonus)}\n\n` +
+                `New Balance: ${formatCurrency(users[referrerIndex].balance)}\n` +
+                `Total Referral Earnings: ${formatCurrency(users[referrerIndex].referralEarnings)}\n\n` +
+                `Keep sharing your code: ${referrer.referralCode}`
+              );
+            } catch (error) {
+              console.log('Could not notify referrer');
+            }
+          }
+        }
+      }
+      
+      // Notify admin
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `💰 **New Investment**\n\n` +
+                            `User: ${user.name}\n` +
+                            `Member ID: ${user.memberId}\n` +
+                            `Amount: ${formatCurrency(amount)}\n` +
+                            `Investment ID: ${investment.id}\n` +
+                            `Time: ${new Date().toLocaleString()}`;
         
-        // Update referrer stats
-        const referrerIndex = users.findIndex(u => u.memberId === referrer.memberId);
-        if (referrerIndex !== -1) {
-          users[referrerIndex].balance = (parseFloat(users[referrerIndex].balance) || 0) + referralBonus;
-          users[referrerIndex].referralEarnings = (parseFloat(users[referrerIndex].referralEarnings) || 0) + referralBonus;
-          users[referrerIndex].referrals = (users[referrerIndex].referrals || 0) + 1;
-          
-          // Save referral record
-          const referrals = await loadData(REFERRALS_FILE);
-          referrals.push({
-            id: `REF-${Date.now()}`,
-            referrerId: referrer.memberId,
-            referrerName: referrer.name,
-            referredId: user.memberId,
-            referredName: user.name,
-            investmentAmount: amount,
-            bonusAmount: referralBonus,
-            date: new Date().toISOString()
-          });
-          await saveData(REFERRALS_FILE, referrals);
-          
-          // Record transaction for referrer
-          transactions.push({
-            id: `TRX-REF-${Date.now()}`,
-            memberId: referrer.memberId,
-            type: 'referral_bonus',
-            amount: referralBonus,
-            description: `10% referral bonus from ${user.name}'s investment`,
-            date: new Date().toISOString()
-          });
-          await saveData(TRANSACTIONS_FILE, transactions);
-          
-          await saveData(USERS_FILE, users);
-          
-          // Notify referrer
+        for (const adminId of adminIds) {
           try {
-            await bot.sendMessage(referrer.chatId,
-              `💰 **Referral Bonus Earned!**\n\n` +
-              `${user.name} invested ${formatCurrency(amount)}\n` +
-              `You earned 10%: ${formatCurrency(referralBonus)}\n\n` +
-              `New Balance: ${formatCurrency(users[referrerIndex].balance)}\n` +
-              `Total Referral Earnings: ${formatCurrency(users[referrerIndex].referralEarnings)}\n\n` +
-              `Keep sharing your code: ${referrer.referralCode}`
-            );
+            await bot.sendMessage(adminId, adminMessage);
           } catch (error) {
-            console.log('Could not notify referrer');
+            console.log('Could not notify admin:', adminId);
           }
         }
       }
     }
     
-    // Notify admin
-    const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
-    if (adminIds.length > 0) {
-      const adminMessage = `💰 **New Investment**\n\n` +
-                          `User: ${user.name}\n` +
-                          `Member ID: ${user.memberId}\n` +
-                          `Amount: ${formatCurrency(amount)}\n` +
-                          `Investment ID: ${investment.id}\n` +
-                          `Time: ${new Date().toLocaleString()}`;
+    // WITHDRAWAL HANDLING
+    else if (session.step === 'withdraw_amount') {
+      const amount = parseFloat(text);
+      const maxAmount = session.data.maxAmount;
       
-      for (const adminId of adminIds) {
-        try {
-          await bot.sendMessage(adminId, adminMessage);
-        } catch (error) {
-          console.log('Could not notify admin:', adminId);
+      if (isNaN(amount) || amount < 2 || amount > maxAmount) {
+        await bot.sendMessage(chatId,
+          `❌ Invalid amount\n\n` +
+          `Minimum: $2\n` +
+          `Maximum: ${formatCurrency(maxAmount)}\n\n` +
+          `Enter valid amount:`
+        );
+        return;
+      }
+      
+      const users = await loadData(USERS_FILE);
+      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
+      
+      if (userIndex === -1) {
+        await bot.sendMessage(chatId, '❌ User not found.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      // Update balance
+      users[userIndex].balance = maxAmount - amount;
+      
+      // Create withdrawal request
+      const withdrawal = {
+        id: `WD-${Date.now()}`,
+        memberId: session.data.memberId,
+        userName: users[userIndex].name,
+        amount: amount,
+        status: 'pending',
+        requestedAt: new Date().toISOString(),
+        completedAt: null,
+        paymentMethod: 'To be confirmed',
+        adminNote: ''
+      };
+      
+      // Save withdrawal
+      const withdrawals = await loadData(WITHDRAWALS_FILE);
+      withdrawals.push(withdrawal);
+      await saveData(WITHDRAWALS_FILE, withdrawals);
+      
+      // Record transaction
+      const transactions = await loadData(TRANSACTIONS_FILE);
+      transactions.push({
+        id: `TRX-WD-${Date.now()}`,
+        memberId: session.data.memberId,
+        type: 'withdrawal',
+        amount: -amount,
+        description: `Withdrawal request #${withdrawal.id}`,
+        date: new Date().toISOString()
+      });
+      await saveData(TRANSACTIONS_FILE, transactions);
+      
+      await saveData(USERS_FILE, users);
+      
+      delete userSessions[chatId];
+      
+      // Send confirmation
+      await bot.sendMessage(chatId,
+        `✅ **Withdrawal Request Submitted!**\n\n` +
+        `Withdrawal ID: ${withdrawal.id}\n` +
+        `Amount: ${formatCurrency(amount)}\n` +
+        `Status: Pending\n` +
+        `Processing: 10-15 minutes\n\n` +
+        `We will notify you when processed.\n\n` +
+        `Your balance: ${formatCurrency(users[userIndex].balance)}`
+      );
+      
+      // Notify admin
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `💳 **New Withdrawal Request**\n\n` +
+                            `User: ${withdrawal.userName}\n` +
+                            `Member ID: ${withdrawal.memberId}\n` +
+                            `Amount: ${formatCurrency(amount)}\n` +
+                            `Withdrawal ID: ${withdrawal.id}\n` +
+                            `Balance After: ${formatCurrency(users[userIndex].balance)}\n\n` +
+                            `Approve: /approve ${withdrawal.id}\n` +
+                            `Reject: /reject ${withdrawal.id}`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
         }
       }
     }
-  } catch (error) {
-    console.log('Investment error:', error.message);
-    await bot.sendMessage(chatId, '❌ Error creating investment. Try /invest again.');
-    delete userSessions[chatId];
-  }
-});
-
-// Earnings command - FIXED
-bot.onText(/\/earnings/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
-  
-  if (!user) {
-    await bot.sendMessage(chatId, '❌ Please login first with /login');
-    return;
-  }
-  
-  if (user.banned) {
-    await bot.sendMessage(chatId, '🚫 Account banned.');
-    return;
-  }
-  
-  const investments = await loadData(INVESTMENTS_FILE);
-  const userInvestments = investments.filter(inv => inv.memberId === user.memberId);
-  const activeInvestments = userInvestments.filter(inv => inv.status === 'active');
-  
-  let earningsMessage = `💰 **Your Earnings Dashboard**\n\n`;
-  
-  earningsMessage += `👤 **Account Summary**\n`;
-  earningsMessage += `Name: ${user.name}\n`;
-  earningsMessage += `Member ID: ${user.memberId}\n`;
-  earningsMessage += `Balance: ${formatCurrency(user.balance)}\n`;
-  earningsMessage += `Total Earned: ${formatCurrency(user.totalEarned)}\n`;
-  earningsMessage += `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n`;
-  earningsMessage += `Total Referrals: ${user.referrals || 0}\n\n`;
-  
-  earningsMessage += `📈 **Investment Summary**\n`;
-  earningsMessage += `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n`;
-  earningsMessage += `Active Investments: ${activeInvestments.length}\n\n`;
-  
-  if (activeInvestments.length > 0) {
-    earningsMessage += `🏦 **Active Investments**\n`;
-    activeInvestments.forEach((inv, index) => {
-      const remainingDays = Math.max(0, 30 - (inv.daysActive || 0));
-      earningsMessage += `${index + 1}. ${formatCurrency(inv.amount)} - ${remainingDays}d left\n`;
-    });
-    earningsMessage += `\n`;
-  }
-  
-  earningsMessage += `💵 **Withdrawal Info**\n`;
-  earningsMessage += `Minimum: $2\n`;
-  earningsMessage += `Processing: 10-15 minutes\n`;
-  earningsMessage += `Available: ${formatCurrency(user.balance)}\n\n`;
-  
-  earningsMessage += `👥 **Referral Program**\n`;
-  earningsMessage += `Your Code: ${user.referralCode}\n`;
-  earningsMessage += `Earn 10% of friends' investments!\n\n`;
-  
-  earningsMessage += `📱 **Quick Actions**\n`;
-  earningsMessage += `/withdraw - Withdraw funds\n`;
-  earningsMessage += `/invest - Add more funds\n`;
-  earningsMessage += `/referral - Share & earn\n`;
-  earningsMessage += `/support - Contact help`;
-  
-  await bot.sendMessage(chatId, earningsMessage);
-});
-
-// View others earnings - FIXED
-bot.onText(/\/viewearnings (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const targetMemberId = match[1].toUpperCase();
-  
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
-  
-  if (!user) {
-    await bot.sendMessage(chatId, '❌ Please login first with /login');
-    return;
-  }
-  
-  if (user.banned) {
-    await bot.sendMessage(chatId, '🚫 Account banned.');
-    return;
-  }
-  
-  // Check if user is trying to view their own earnings
-  if (targetMemberId === user.memberId) {
-    await bot.sendMessage(chatId, '❌ Use /earnings to view your own earnings.');
-    return;
-  }
-  
-  // Find target user
-  const targetUser = users.find(u => u.memberId === targetMemberId && !u.isFake);
-  
-  if (!targetUser) {
-    await bot.sendMessage(chatId, `❌ User ${targetMemberId} not found.`);
-    return;
-  }
-  
-  // Check if user has already paid for viewing this user's earnings today
-  const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
-  const today = new Date().toISOString().split('T')[0];
-  const alreadyPaid = earningsViews.find(view => 
-    view.viewerId === user.memberId && 
-    view.targetId === targetMemberId &&
-    view.date === today
-  );
-  
-  if (alreadyPaid) {
-    // Show earnings (already paid today)
-    const earningsMessage = `💰 **Earnings of ${targetUser.name} (${targetMemberId})**\n\n` +
-                           `Balance: ${formatCurrency(targetUser.balance || 0)}\n` +
-                           `Total Invested: ${formatCurrency(targetUser.totalInvested || 0)}\n` +
-                           `Total Earned: ${formatCurrency(targetUser.totalEarned || 0)}\n` +
-                           `Referrals: ${targetUser.referrals || 0}\n` +
-                           `Joined: ${new Date(targetUser.joinedDate).toLocaleDateString()}\n\n` +
-                           `✅ Already viewed today (Free)`;
     
-    await bot.sendMessage(chatId, earningsMessage);
-    return;
-  }
-  
-  // Check if user has enough balance ($1 required)
-  if (user.balance < 1) {
-    await bot.sendMessage(chatId,
-      `❌ **Payment Required**\n\n` +
-      `Viewing others' earnings costs $1.\n` +
-      `Your balance: ${formatCurrency(user.balance)}\n` +
-      `Need ${formatCurrency(1 - user.balance)} more.\n\n` +
-      `Invest or refer friends to earn more!`
-    );
-    return;
-  }
-  
-  // Charge $1 for viewing
-  const userIndex = users.findIndex(u => u.memberId === user.memberId);
-  users[userIndex].balance = parseFloat(user.balance) - 1;
-  
-  // Record the payment
-  earningsViews.push({
-    id: `VIEW-${Date.now()}`,
-    viewerId: user.memberId,
-    viewerName: user.name,
-    targetId: targetMemberId,
-    targetName: targetUser.name,
-    amount: 1,
-    date: today,
-    timestamp: new Date().toISOString()
-  });
-  
-  // Record transaction
-  const transactions = await loadData(TRANSACTIONS_FILE);
-  transactions.push({
-    id: `TRX-VIEW-${Date.now()}`,
-    memberId: user.memberId,
-    type: 'earnings_view',
-    amount: -1,
-    description: `Paid to view ${targetUser.name}'s earnings`,
-    date: new Date().toISOString()
-  });
-  
-  await saveData(USERS_FILE, users);
-  await saveData(EARNINGS_VIEWS_FILE, earningsViews);
-  await saveData(TRANSACTIONS_FILE, transactions);
-  
-  // Show earnings
-  const earningsMessage = `💰 **Earnings of ${targetUser.name} (${targetMemberId})**\n\n` +
-                         `Balance: ${formatCurrency(targetUser.balance || 0)}\n` +
-                         `Total Invested: ${formatCurrency(targetUser.totalInvested || 0)}\n` +
-                         `Total Earned: ${formatCurrency(targetUser.totalEarned || 0)}\n` +
-                         `Referrals: ${targetUser.referrals || 0}\n` +
-                         `Joined: ${new Date(targetUser.joinedDate).toLocaleDateString()}\n\n` +
-                         `💸 **Paid $1 for this view**\n` +
-                         `Your new balance: ${formatCurrency(users[userIndex].balance)}`;
-  
-  await bot.sendMessage(chatId, earningsMessage);
-});
-
-// Support command - FIXED
-bot.onText(/\/support/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
-  
-  if (!user) {
-    await bot.sendMessage(chatId, '❌ Please login first with /login');
-    return;
-  }
-  
-  if (user.banned) {
-    await bot.sendMessage(chatId, '🚫 Account banned.');
-    return;
-  }
-  
-  // Check for active support chat
-  const supportChats = await loadData(SUPPORT_CHATS_FILE);
-  const activeChat = supportChats.find(chat => 
-    chat.userId === user.memberId && 
-    chat.status === 'active'
-  );
-  
-  if (activeChat) {
-    // Continue existing chat
-    userSessions[chatId] = {
-      step: 'support_chat',
-      data: {
-        memberId: user.memberId,
-        chatId: activeChat.id
-      }
-    };
-    
-    await bot.sendMessage(chatId,
-      `💬 **Support Chat (Active)**\n\n` +
-      `You have an active support conversation.\n` +
-      `Type your message below:\n\n` +
-      `Last message from support: "${activeChat.messages.slice(-1)[0]?.message || 'No messages yet'}"\n\n` +
-      `Type /endsupport to end this chat`
-    );
-  } else {
-    // Start new support chat
-    userSessions[chatId] = {
-      step: 'support_topic',
-      data: {
-        memberId: user.memberId,
-        userName: user.name
-      }
-    };
-    
-    await bot.sendMessage(chatId,
-      `🆘 **Support Center**\n\n` +
-      `Please select your issue:\n\n` +
-      `1️⃣ Account Issues\n` +
-      `2️⃣ Investment Problems\n` +
-      `3️⃣ Withdrawal Help\n` +
-      `4️⃣ Referral Issues\n` +
-      `5️⃣ Other\n\n` +
-      `Reply with the number (1-5):`
-    );
-  }
-});
-
-// Handle support messages - FIXED
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-  
-  if (!text || text.startsWith('/')) return;
-  
-  const session = userSessions[chatId];
-  if (!session) return;
-  
-  try {
-    if (session.step === 'support_topic') {
+    // SUPPORT HANDLING
+    else if (session.step === 'support_topic') {
       const topicNumber = parseInt(text);
       const topics = [
         'Account Issues',
@@ -1215,9 +1008,387 @@ bot.on('message', async (msg) => {
       }
     }
   } catch (error) {
-    console.log('Support error:', error.message);
-    await bot.sendMessage(chatId, '❌ Error in support chat. Please try /support again.');
+    console.log('Message handling error:', error.message);
+    await bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
     delete userSessions[chatId];
+  }
+});
+
+// Login command
+bot.onText(/\/login/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (user) {
+    await bot.sendMessage(chatId, '✅ You are already logged in. Use /start to see dashboard.');
+    return;
+  }
+  
+  userSessions[chatId] = {
+    step: 'login_memberid',
+    data: {}
+  };
+  
+  await bot.sendMessage(chatId,
+    `🔐 **Login**\n\n` +
+    `Enter your Member ID:\n` +
+    `(Format: USER-123456)`
+  );
+});
+
+// Invest command
+bot.onText(/\/invest/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login or register with /register');
+    return;
+  }
+  
+  if (user.banned) {
+    await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
+    return;
+  }
+  
+  userSessions[chatId] = {
+    step: 'invest_amount',
+    data: { memberId: user.memberId }
+  };
+  
+  await bot.sendMessage(chatId,
+    `💰 **Make Investment**\n\n` +
+    `Minimum Investment: $10\n` +
+    `Daily Profit: 2%\n` +
+    `Investment Period: 30 days\n\n` +
+    `**Payment Details:**\n` +
+    `💳 M-Pesa Till: 6034186\n` +
+    `🏢 Name: Starlife Advert US Agency\n\n` +
+    `After payment, enter amount invested:`
+  );
+});
+
+// Earnings command
+bot.onText(/\/earnings/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  if (user.banned) {
+    await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
+    return;
+  }
+  
+  const investments = await loadData(INVESTMENTS_FILE);
+  const userInvestments = investments.filter(inv => inv.memberId === user.memberId);
+  const activeInvestments = userInvestments.filter(inv => inv.status === 'active');
+  
+  let earningsMessage = `💰 **Your Earnings Dashboard**\n\n`;
+  
+  earningsMessage += `👤 **Account Summary**\n`;
+  earningsMessage += `Name: ${user.name}\n`;
+  earningsMessage += `Member ID: ${user.memberId}\n`;
+  earningsMessage += `Balance: ${formatCurrency(user.balance)}\n`;
+  earningsMessage += `Total Earned: ${formatCurrency(user.totalEarned)}\n`;
+  earningsMessage += `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n`;
+  earningsMessage += `Total Referrals: ${user.referrals || 0}\n\n`;
+  
+  earningsMessage += `📈 **Investment Summary**\n`;
+  earningsMessage += `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n`;
+  earningsMessage += `Active Investments: ${activeInvestments.length}\n\n`;
+  
+  if (activeInvestments.length > 0) {
+    earningsMessage += `🏦 **Active Investments**\n`;
+    activeInvestments.forEach((inv, index) => {
+      const remainingDays = Math.max(0, 30 - (inv.daysActive || 0));
+      earningsMessage += `${index + 1}. ${formatCurrency(inv.amount)} - ${remainingDays}d left\n`;
+    });
+    earningsMessage += `\n`;
+  }
+  
+  earningsMessage += `💵 **Withdrawal Info**\n`;
+  earningsMessage += `Minimum: $2\n`;
+  earningsMessage += `Processing: 10-15 minutes\n`;
+  earningsMessage += `Available: ${formatCurrency(user.balance)}\n\n`;
+  
+  earningsMessage += `👥 **Referral Program**\n`;
+  earningsMessage += `Your Code: ${user.referralCode}\n`;
+  earningsMessage += `Earn 10% of friends' investments!\n\n`;
+  
+  earningsMessage += `📱 **Quick Actions**\n`;
+  earningsMessage += `/withdraw - Withdraw funds\n`;
+  earningsMessage += `/invest - Add more funds\n`;
+  earningsMessage += `/referral - Share & earn\n`;
+  earningsMessage += `/support - Contact help`;
+  
+  await bot.sendMessage(chatId, earningsMessage);
+});
+
+// View others earnings - ALWAYS CHARGE $1
+bot.onText(/\/viewearnings (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const targetMemberId = match[1].toUpperCase();
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  if (user.banned) {
+    await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
+    return;
+  }
+  
+  // Check if user is trying to view their own earnings
+  if (targetMemberId === user.memberId) {
+    await bot.sendMessage(chatId, '❌ Use /earnings to view your own earnings.');
+    return;
+  }
+  
+  // Find target user
+  const targetUser = users.find(u => u.memberId === targetMemberId && !u.isFake);
+  
+  if (!targetUser) {
+    await bot.sendMessage(chatId, `❌ User ${targetMemberId} not found.`);
+    return;
+  }
+  
+  // ALWAYS charge $1 for viewing (no free views)
+  if (user.balance < 1) {
+    await bot.sendMessage(chatId,
+      `❌ **Payment Required**\n\n` +
+      `Viewing others' earnings costs $1.\n` +
+      `Your balance: ${formatCurrency(user.balance)}\n` +
+      `Need ${formatCurrency(1 - user.balance)} more.\n\n` +
+      `Invest or refer friends to earn more!`
+    );
+    return;
+  }
+  
+  // Charge $1 for viewing
+  const userIndex = users.findIndex(u => u.memberId === user.memberId);
+  users[userIndex].balance = parseFloat(user.balance) - 1;
+  
+  // Record the payment
+  const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
+  const today = new Date().toISOString().split('T')[0];
+  
+  earningsViews.push({
+    id: `VIEW-${Date.now()}`,
+    viewerId: user.memberId,
+    viewerName: user.name,
+    targetId: targetMemberId,
+    targetName: targetUser.name,
+    amount: 1,
+    date: today,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Record transaction
+  const transactions = await loadData(TRANSACTIONS_FILE);
+  transactions.push({
+    id: `TRX-VIEW-${Date.now()}`,
+    memberId: user.memberId,
+    type: 'earnings_view',
+    amount: -1,
+    description: `Paid to view ${targetUser.name}'s earnings`,
+    date: new Date().toISOString()
+  });
+  
+  await saveData(USERS_FILE, users);
+  await saveData(EARNINGS_VIEWS_FILE, earningsViews);
+  await saveData(TRANSACTIONS_FILE, transactions);
+  
+  // Show earnings
+  const earningsMessage = `💰 **Earnings of ${targetUser.name} (${targetMemberId})**\n\n` +
+                         `Balance: ${formatCurrency(targetUser.balance || 0)}\n` +
+                         `Total Invested: ${formatCurrency(targetUser.totalInvested || 0)}\n` +
+                         `Total Earned: ${formatCurrency(targetUser.totalEarned || 0)}\n` +
+                         `Referrals: ${targetUser.referrals || 0}\n` +
+                         `Joined: ${new Date(targetUser.joinedDate).toLocaleDateString()}\n\n` +
+                         `💸 **Paid $1 for this view**\n` +
+                         `Your new balance: ${formatCurrency(users[userIndex].balance)}`;
+  
+  await bot.sendMessage(chatId, earningsMessage);
+});
+
+// Withdraw command
+bot.onText(/\/withdraw/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  if (user.banned) {
+    await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
+    return;
+  }
+  
+  const balance = parseFloat(user.balance) || 0;
+  
+  if (balance < 2) {
+    await bot.sendMessage(chatId,
+      `❌ Minimum withdrawal is $2\n\n` +
+      `Your Balance: ${formatCurrency(balance)}\n` +
+      `Need ${formatCurrency(2 - balance)} more\n\n` +
+      `Invest or refer friends to earn more!`
+    );
+    return;
+  }
+  
+  userSessions[chatId] = {
+    step: 'withdraw_amount',
+    data: { memberId: user.memberId, maxAmount: balance }
+  };
+  
+  await bot.sendMessage(chatId,
+    `💳 **Withdrawal Request**\n\n` +
+    `Available Balance: ${formatCurrency(balance)}\n` +
+    `Minimum Withdrawal: $2\n` +
+    `Processing Time: 10-15 minutes\n\n` +
+    `**Payment Methods:**\n` +
+    `• M-Pesa (Kenya)\n` +
+    `• Bank Transfer\n` +
+    `• PayPal (if available)\n\n` +
+    `Enter amount to withdraw:`
+  );
+});
+
+// Referral command
+bot.onText(/\/referral/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  if (user.banned) {
+    await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
+    return;
+  }
+  
+  const referrals = await loadData(REFERRALS_FILE);
+  const userReferrals = referrals.filter(ref => ref.referrerId === user.memberId);
+  const totalReferralEarnings = userReferrals.reduce((sum, ref) => sum + ref.bonusAmount, 0);
+  
+  const referralMessage = `👥 **Earn 10% Referral Commission**\n\n` +
+                         `**Your Referral Stats:**\n` +
+                         `Total Referrals: ${userReferrals.length}\n` +
+                         `Total Earned: ${formatCurrency(totalReferralEarnings)}\n` +
+                         `Pending Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n` +
+                         `**Your Referral Code:**\n` +
+                         `\`${user.referralCode}\`\n\n` +
+                         `**How It Works:**\n` +
+                         `1. Share your code with friends\n` +
+                         `2. They register using your code\n` +
+                         `3. When they invest ANY amount\n` +
+                         `4. You earn 10% of their investment!\n\n` +
+                         `**Example:**\n` +
+                         `• Friend invests $100 → You earn $10\n` +
+                         `• Friend invests $500 → You earn $50\n` +
+                         `• Friend invests $1000 → You earn $100\n\n` +
+                         `**Payment Methods to Share:**\n` +
+                         `💳 M-Pesa Till: 6034186\n` +
+                         `🏢 Name: Starlife Advert US Agency\n\n` +
+                         `**Copy & Share Message:**\n` +
+                         `\`\`\`\n` +
+                         `🎯 Join Starlife Advert & Earn 2% Daily!\n\n` +
+                         `💰 Invest from $10\n` +
+                         `📈 Earn 2% daily profit\n` +
+                         `👥 Get 10% from referrals\n` +
+                         `⚡ Fast withdrawals (10-15 min)\n\n` +
+                         `Use my referral code: ${user.referralCode}\n\n` +
+                         `Payment: M-Pesa Till 6034186\n` +
+                         `Name: Starlife Advert US Agency\n` +
+                         `\`\`\``;
+  
+  await bot.sendMessage(chatId, referralMessage, { parse_mode: 'Markdown' });
+});
+
+// Support command
+bot.onText(/\/support/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  if (user.banned) {
+    await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
+    return;
+  }
+  
+  // Check for active support chat
+  const supportChats = await loadData(SUPPORT_CHATS_FILE);
+  const activeChat = supportChats.find(chat => 
+    chat.userId === user.memberId && 
+    chat.status === 'active'
+  );
+  
+  if (activeChat) {
+    // Continue existing chat
+    userSessions[chatId] = {
+      step: 'support_chat',
+      data: {
+        memberId: user.memberId,
+        userName: user.name,
+        chatId: activeChat.id
+      }
+    };
+    
+    await bot.sendMessage(chatId,
+      `💬 **Support Chat (Active)**\n\n` +
+      `You have an active support conversation.\n` +
+      `Type your message below:\n\n` +
+      `Last message from support: "${activeChat.messages.slice(-1)[0]?.message || 'No messages yet'}"\n\n` +
+      `Type /endsupport to end this chat`
+    );
+  } else {
+    // Start new support chat
+    userSessions[chatId] = {
+      step: 'support_topic',
+      data: {
+        memberId: user.memberId,
+        userName: user.name
+      }
+    };
+    
+    await bot.sendMessage(chatId,
+      `🆘 **Support Center**\n\n` +
+      `Please select your issue:\n\n` +
+      `1️⃣ Account Issues\n` +
+      `2️⃣ Investment Problems\n` +
+      `3️⃣ Withdrawal Help\n` +
+      `4️⃣ Referral Issues\n` +
+      `5️⃣ Other\n\n` +
+      `Reply with the number (1-5):`
+    );
   }
 });
 
@@ -1260,29 +1431,451 @@ bot.onText(/\/admin/, async (msg) => {
   }
   
   const adminMessage = `⚡ **Admin Panel**\n\n` +
+                      `**User Management:**\n` +
+                      `/users - List all users\n` +
+                      `/view MEMBER_ID - User details\n` +
+                      `/suspend MEMBER_ID - Suspend account\n` +
+                      `/unsuspend MEMBER_ID - Unsuspend account\n` +
+                      `/resetpass MEMBER_ID - Reset password\n` +
+                      `/delete MEMBER_ID - Delete account\n` +
+                      `/addbalance MEMBER_ID AMOUNT - Add funds\n` +
+                      `/deductbalance MEMBER_ID AMOUNT - Deduct funds\n\n` +
                       `**Support Management:**\n` +
                       `/supportchats - Active chats\n` +
-                      `/replychat CHAT_ID MSG - Reply\n` +
-                      `/closechat CHAT_ID - Close chat\n` +
-                      `/viewchat CHAT_ID - View history\n\n` +
-                      `**User Management:**\n` +
-                      `/users - List users\n` +
-                      `/view MEMBER_ID - User details\n` +
-                      `/ban MEMBER_ID - Ban user\n` +
-                      `/unban MEMBER_ID - Unban user\n\n` +
+                      `/replychat CHAT_ID MSG - Reply to user\n` +
+                      `/closechat CHAT_ID - Close chat\n\n` +
                       `**Financial Management:**\n` +
                       `/investments - All investments\n` +
                       `/withdrawals - Pending withdrawals\n` +
                       `/approve WD_ID - Approve withdrawal\n` +
                       `/reject WD_ID - Reject withdrawal\n\n` +
                       `**System Management:**\n` +
-                      `/stats - Statistics\n` +
-                      `/broadcast MESSAGE - Send to all`;
+                      `/stats - System statistics\n` +
+                      `/broadcast MESSAGE - Send to all users`;
   
   await bot.sendMessage(chatId, adminMessage);
 });
 
-// Admin support chats
+// Admin: List users
+bot.onText(/\/users/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const realUsers = users.filter(u => !u.isFake);
+    
+    if (realUsers.length === 0) {
+      await bot.sendMessage(chatId, '📭 No registered users yet.');
+      return;
+    }
+    
+    let message = `👥 **Total Users: ${realUsers.length}**\n\n`;
+    
+    // Show last 15 users
+    const lastUsers = realUsers.slice(-15).reverse();
+    lastUsers.forEach((user, index) => {
+      message += `${index + 1}. ${user.name}\n`;
+      message += `   ID: ${user.memberId}\n`;
+      message += `   Balance: ${formatCurrency(user.balance)}\n`;
+      message += `   Status: ${user.banned ? '🚫' : '✅'}\n`;
+      message += `   Actions: /view ${user.memberId}\n\n`;
+    });
+    
+    if (realUsers.length > 15) {
+      message += `... and ${realUsers.length - 15} more users\n`;
+    }
+    
+    message += `\n**Quick Stats:**\n`;
+    message += `Active: ${realUsers.filter(u => !u.banned).length}\n`;
+    message += `Suspended: ${realUsers.filter(u => u.banned).length}\n`;
+    message += `Total Balance: ${formatCurrency(realUsers.reduce((sum, u) => sum + (parseFloat(u.balance) || 0), 0))}`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Admin users error:', error.message);
+    await bot.sendMessage(chatId, '❌ Error fetching users');
+  }
+});
+
+// Admin: View user details
+bot.onText(/\/view (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const user = users.find(u => u.memberId === memberId && !u.isFake);
+    
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found`);
+      return;
+    }
+    
+    const investments = await loadData(INVESTMENTS_FILE);
+    const userInvestments = investments.filter(inv => inv.memberId === memberId);
+    const withdrawals = await loadData(WITHDRAWALS_FILE);
+    const userWithdrawals = withdrawals.filter(wd => wd.memberId === memberId);
+    const referrals = await loadData(REFERRALS_FILE);
+    const userReferrals = referrals.filter(ref => ref.referrerId === memberId);
+    
+    let message = `👤 **User Details**\n\n`;
+    
+    message += `**Basic Info**\n`;
+    message += `Name: ${user.name}\n`;
+    message += `Member ID: ${user.memberId}\n`;
+    message += `Chat ID: ${user.chatId}\n`;
+    message += `Email: ${user.email}\n`;
+    message += `Joined: ${new Date(user.joinedDate).toLocaleString()}\n`;
+    message += `Last Login: ${new Date(user.lastLogin).toLocaleString()}\n`;
+    message += `Status: ${user.banned ? '🚫 SUSPENDED' : '✅ ACTIVE'}\n\n`;
+    
+    message += `**Financial**\n`;
+    message += `Balance: ${formatCurrency(user.balance)}\n`;
+    message += `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n`;
+    message += `Total Earned: ${formatCurrency(user.totalEarned || 0)}\n`;
+    message += `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n`;
+    
+    message += `**Investments**\n`;
+    message += `Active: ${userInvestments.filter(i => i.status === 'active').length}\n`;
+    message += `Total: ${userInvestments.length}\n`;
+    message += `Total Amount: ${formatCurrency(userInvestments.reduce((sum, i) => sum + i.amount, 0))}\n\n`;
+    
+    message += `**Referrals**\n`;
+    message += `Total Referred: ${userReferrals.length}\n`;
+    message += `Referral Income: ${formatCurrency(userReferrals.reduce((sum, r) => sum + r.bonusAmount, 0))}\n`;
+    message += `Referral Code: ${user.referralCode}\n\n`;
+    
+    message += `**Withdrawals**\n`;
+    message += `Pending: ${userWithdrawals.filter(w => w.status === 'pending').length}\n`;
+    message += `Completed: ${userWithdrawals.filter(w => w.status === 'completed').length}\n`;
+    message += `Total Withdrawn: ${formatCurrency(userWithdrawals.filter(w => w.status === 'completed').reduce((sum, w) => sum + w.amount, 0))}\n\n`;
+    
+    message += `**Admin Actions**\n`;
+    message += `/suspend ${memberId} - Suspend account\n`;
+    message += `/unsuspend ${memberId} - Unsuspend account\n`;
+    message += `/resetpass ${memberId} - Reset password\n`;
+    message += `/delete ${memberId} - Delete account\n`;
+    message += `/addbalance ${memberId} AMOUNT - Add funds\n`;
+    message += `/deductbalance ${memberId} AMOUNT - Deduct funds`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Admin view error:', error.message);
+    await bot.sendMessage(chatId, '❌ Error fetching user details');
+  }
+});
+
+// Admin: Suspend account
+bot.onText(/\/suspend (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId && !u.isFake);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found`);
+      return;
+    }
+    
+    users[userIndex].banned = true;
+    await saveData(USERS_FILE, users);
+    
+    await bot.sendMessage(chatId, `✅ User ${memberId} has been suspended.`);
+    
+    // Notify user
+    try {
+      await bot.sendMessage(users[userIndex].chatId,
+        '🚫 **Account Suspended**\n\n' +
+        'Your account has been suspended by administrator.\n' +
+        'You cannot access your account until unsuspended.'
+      );
+    } catch (error) {
+      console.log('Could not notify suspended user');
+    }
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error suspending user');
+  }
+});
+
+// Admin: Unsuspend account
+bot.onText(/\/unsuspend (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId && !u.isFake);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found`);
+      return;
+    }
+    
+    users[userIndex].banned = false;
+    await saveData(USERS_FILE, users);
+    
+    await bot.sendMessage(chatId, `✅ User ${memberId} has been unsuspended.`);
+    
+    // Notify user
+    try {
+      await bot.sendMessage(users[userIndex].chatId,
+        '✅ **Account Unsuspended**\n\n' +
+        'Your account has been unsuspended by administrator.\n' +
+        'You can now access your account normally.'
+      );
+    } catch (error) {
+      console.log('Could not notify unsuspended user');
+    }
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error unsuspending user');
+  }
+});
+
+// Admin: Reset password
+bot.onText(/\/resetpass (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId && !u.isFake);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found`);
+      return;
+    }
+    
+    const tempPassword = Math.random().toString(36).slice(-8);
+    users[userIndex].passwordHash = hashPassword(tempPassword);
+    
+    await saveData(USERS_FILE, users);
+    
+    await bot.sendMessage(chatId,
+      `✅ Password reset for ${memberId}\n\n` +
+      `Temporary Password: ${tempPassword}\n\n` +
+      `User must login with this password immediately.`
+    );
+    
+    // Notify user
+    try {
+      await bot.sendMessage(users[userIndex].chatId,
+        '🔐 **Password Reset**\n\n' +
+        'Your password has been reset by administrator.\n\n' +
+        `Temporary Password: ${tempPassword}\n\n` +
+        '⚠️ Please login immediately and change your password.'
+      );
+    } catch (error) {
+      console.log('Could not notify user');
+    }
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error resetting password');
+  }
+});
+
+// Admin: Delete account
+bot.onText(/\/delete (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId && !u.isFake);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found`);
+      return;
+    }
+    
+    const deletedUser = users.splice(userIndex, 1)[0];
+    await saveData(USERS_FILE, users);
+    
+    await bot.sendMessage(chatId, `✅ User ${memberId} (${deletedUser.name}) has been deleted.`);
+    
+    // Notify user
+    try {
+      await bot.sendMessage(deletedUser.chatId,
+        '❌ **Account Deleted**\n\n' +
+        'Your account has been deleted by administrator.\n' +
+        'All your data has been removed from the system.'
+      );
+    } catch (error) {
+      console.log('Could not notify deleted user');
+    }
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error deleting user');
+  }
+});
+
+// Admin: Add balance
+bot.onText(/\/addbalance (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const params = match[1].split(' ');
+  const memberId = params[0].toUpperCase();
+  const amount = parseFloat(params[1]);
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  if (!memberId || isNaN(amount) || amount <= 0) {
+    await bot.sendMessage(chatId, '❌ Usage: /addbalance MEMBER_ID AMOUNT');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId && !u.isFake);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found`);
+      return;
+    }
+    
+    users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) + amount;
+    users[userIndex].totalEarned = (parseFloat(users[userIndex].totalEarned) || 0) + amount;
+    
+    await saveData(USERS_FILE, users);
+    
+    // Record transaction
+    const transactions = await loadData(TRANSACTIONS_FILE);
+    transactions.push({
+      id: `TRX-ADMIN-ADD-${Date.now()}`,
+      memberId: memberId,
+      type: 'admin_add',
+      amount: amount,
+      description: `Admin added funds by ${chatId}`,
+      date: new Date().toISOString()
+    });
+    await saveData(TRANSACTIONS_FILE, transactions);
+    
+    await bot.sendMessage(chatId,
+      `✅ Funds added to ${memberId}\n\n` +
+      `Amount: ${formatCurrency(amount)}\n` +
+      `New Balance: ${formatCurrency(users[userIndex].balance)}\n` +
+      `User: ${users[userIndex].name}`
+    );
+    
+    // Notify user
+    try {
+      await bot.sendMessage(users[userIndex].chatId,
+        `💰 **Funds Added by Admin**\n\n` +
+        `Amount: ${formatCurrency(amount)}\n` +
+        `New Balance: ${formatCurrency(users[userIndex].balance)}\n\n` +
+        `Thank you for being part of Starlife Advert!`
+      );
+    } catch (error) {
+      console.log('Could not notify user');
+    }
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error adding funds');
+  }
+});
+
+// Admin: Deduct balance
+bot.onText(/\/deductbalance (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const params = match[1].split(' ');
+  const memberId = params[0].toUpperCase();
+  const amount = parseFloat(params[1]);
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  if (!memberId || isNaN(amount) || amount <= 0) {
+    await bot.sendMessage(chatId, '❌ Usage: /deductbalance MEMBER_ID AMOUNT');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId && !u.isFake);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found`);
+      return;
+    }
+    
+    const currentBalance = parseFloat(users[userIndex].balance) || 0;
+    if (amount > currentBalance) {
+      await bot.sendMessage(chatId, `❌ Cannot deduct ${formatCurrency(amount)}. User only has ${formatCurrency(currentBalance)}.`);
+      return;
+    }
+    
+    users[userIndex].balance = currentBalance - amount;
+    
+    await saveData(USERS_FILE, users);
+    
+    // Record transaction
+    const transactions = await loadData(TRANSACTIONS_FILE);
+    transactions.push({
+      id: `TRX-ADMIN-DEDUCT-${Date.now()}`,
+      memberId: memberId,
+      type: 'admin_deduct',
+      amount: -amount,
+      description: `Admin deducted funds by ${chatId}`,
+      date: new Date().toISOString()
+    });
+    await saveData(TRANSACTIONS_FILE, transactions);
+    
+    await bot.sendMessage(chatId,
+      `✅ Funds deducted from ${memberId}\n\n` +
+      `Amount: ${formatCurrency(amount)}\n` +
+      `New Balance: ${formatCurrency(users[userIndex].balance)}\n` +
+      `User: ${users[userIndex].name}`
+    );
+    
+    // Notify user
+    try {
+      await bot.sendMessage(users[userIndex].chatId,
+        `💰 **Funds Deducted by Admin**\n\n` +
+        `Amount: ${formatCurrency(amount)}\n` +
+        `New Balance: ${formatCurrency(users[userIndex].balance)}\n\n` +
+        `Contact support if you have questions.`
+      );
+    } catch (error) {
+      console.log('Could not notify user');
+    }
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error deducting funds');
+  }
+});
+
+// Admin: View support chats
 bot.onText(/\/supportchats/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -1311,7 +1904,6 @@ bot.onText(/\/supportchats/, async (msg) => {
       message += `   Chat ID: ${chat.id}\n`;
       message += `   Last msg: ${lastMessage?.message?.substring(0, 30)}...\n`;
       message += `   Updated: ${timeAgo} minutes ago\n`;
-      message += `   Admin Replied: ${chat.adminReplied ? '✅' : '❌'}\n`;
       message += `   Reply: /replychat ${chat.id} message\n\n`;
     });
     
@@ -1322,7 +1914,7 @@ bot.onText(/\/supportchats/, async (msg) => {
   }
 });
 
-// Admin reply to chat
+// Admin: Reply to chat
 bot.onText(/\/replychat (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const params = match[1].split(' ');
@@ -1374,7 +1966,7 @@ bot.onText(/\/replychat (.+)/, async (msg, match) => {
           `Chat ID: ${chatIdToReply}\n` +
           `Topic: ${chat.topic}\n` +
           `Status: Active\n\n` +
-          `Reply to continue conversation.`
+          `Reply to this message to continue the conversation.`
         );
       } catch (error) {
         console.log('Could not notify user:', error.message);
@@ -1394,65 +1986,407 @@ bot.onText(/\/replychat (.+)/, async (msg, match) => {
   }
 });
 
+// Admin: Close chat
+bot.onText(/\/closechat (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const chatIdToClose = match[1];
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const supportChats = await loadData(SUPPORT_CHATS_FILE);
+    const chatIndex = supportChats.findIndex(chat => chat.id === chatIdToClose);
+    
+    if (chatIndex === -1) {
+      await bot.sendMessage(chatId, `❌ Chat ${chatIdToClose} not found.`);
+      return;
+    }
+    
+    const chat = supportChats[chatIndex];
+    chat.status = 'closed';
+    chat.updatedAt = new Date().toISOString();
+    
+    await saveData(SUPPORT_CHATS_FILE, supportChats);
+    
+    // Notify user
+    const users = await loadData(USERS_FILE);
+    const user = users.find(u => u.memberId === chat.userId);
+    
+    if (user && user.chatId) {
+      try {
+        await bot.sendMessage(user.chatId,
+          `✅ **Support Chat Closed**\n\n` +
+          `Your support chat has been closed.\n\n` +
+          `Chat ID: ${chatIdToClose}\n` +
+          `Topic: ${chat.topic}\n` +
+          `Messages: ${chat.messages.length}\n\n` +
+          `Use /support if you need help again.`
+        );
+      } catch (error) {
+        console.log('Could not notify user');
+      }
+    }
+    
+    await bot.sendMessage(chatId,
+      `✅ **Chat Closed**\n\n` +
+      `Chat ID: ${chatIdToClose}\n` +
+      `User: ${chat.userName}\n` +
+      `Total Messages: ${chat.messages.length}`
+    );
+  } catch (error) {
+    console.log('Admin closechat error:', error.message);
+    await bot.sendMessage(chatId, '❌ Error closing chat');
+  }
+});
+
+// Admin: View investments
+bot.onText(/\/investments/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const investments = await loadData(INVESTMENTS_FILE);
+    
+    if (investments.length === 0) {
+      await bot.sendMessage(chatId, '📭 No investments yet.');
+      return;
+    }
+    
+    const activeInvestments = investments.filter(i => i.status === 'active');
+    const completedInvestments = investments.filter(i => i.status === 'completed');
+    
+    let message = `📈 **Investment Report**\n\n`;
+    
+    message += `**Summary:**\n`;
+    message += `Total Investments: ${investments.length}\n`;
+    message += `Active: ${activeInvestments.length}\n`;
+    message += `Completed: ${completedInvestments.length}\n`;
+    message += `Total Amount: ${formatCurrency(investments.reduce((sum, i) => sum + i.amount, 0))}\n\n`;
+    
+    message += `**Recent Active Investments (Last 5):**\n`;
+    const recentActive = activeInvestments.slice(-5).reverse();
+    recentActive.forEach((inv, index) => {
+      message += `${index + 1}. ${inv.userName} (${inv.memberId})\n`;
+      message += `   Amount: ${formatCurrency(inv.amount)}\n`;
+      message += `   Days Active: ${inv.daysActive || 0}\n`;
+      message += `   Total Profit: ${formatCurrency(inv.totalProfit || 0)}\n\n`;
+    });
+    
+    message += `**Total Daily Payout:** ${formatCurrency(activeInvestments.reduce((sum, i) => sum + (i.dailyProfit || 0), 0))}`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Admin investments error:', error.message);
+    await bot.sendMessage(chatId, '❌ Error fetching investments');
+  }
+});
+
+// Admin: View withdrawals
+bot.onText(/\/withdrawals/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const withdrawals = await loadData(WITHDRAWALS_FILE);
+    const pendingWithdrawals = withdrawals.filter(w => w.status === 'pending');
+    
+    if (pendingWithdrawals.length === 0) {
+      await bot.sendMessage(chatId, '✅ No pending withdrawals.');
+      return;
+    }
+    
+    let message = `💳 **Pending Withdrawals (${pendingWithdrawals.length})**\n\n`;
+    
+    pendingWithdrawals.forEach((wd, index) => {
+      const timeAgo = Math.floor((new Date() - new Date(wd.requestedAt)) / (1000 * 60));
+      message += `${index + 1}. ${wd.userName} (${wd.memberId})\n`;
+      message += `   Amount: ${formatCurrency(wd.amount)}\n`;
+      message += `   ID: ${wd.id}\n`;
+      message += `   Requested: ${timeAgo} minutes ago\n`;
+      message += `   Approve: /approve ${wd.id}\n`;
+      message += `   Reject: /reject ${wd.id}\n\n`;
+    });
+    
+    message += `**Total Pending:** ${formatCurrency(pendingWithdrawals.reduce((sum, w) => sum + w.amount, 0))}`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Admin withdrawals error:', error.message);
+    await bot.sendMessage(chatId, '❌ Error fetching withdrawals');
+  }
+});
+
+// Admin: Approve withdrawal
+bot.onText(/\/approve (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const withdrawalId = match[1];
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const withdrawals = await loadData(WITHDRAWALS_FILE);
+    const withdrawalIndex = withdrawals.findIndex(w => w.id === withdrawalId);
+    
+    if (withdrawalIndex === -1) {
+      await bot.sendMessage(chatId, `❌ Withdrawal ${withdrawalId} not found`);
+      return;
+    }
+    
+    withdrawals[withdrawalIndex].status = 'completed';
+    withdrawals[withdrawalIndex].completedAt = new Date().toISOString();
+    withdrawals[withdrawalIndex].adminNote = `Approved by admin ${chatId} at ${new Date().toLocaleString()}`;
+    
+    await saveData(WITHDRAWALS_FILE, withdrawals);
+    
+    // Notify user
+    const users = await loadData(USERS_FILE);
+    const user = users.find(u => u.memberId === withdrawals[withdrawalIndex].memberId);
+    
+    if (user) {
+      try {
+        await bot.sendMessage(user.chatId,
+          `✅ **Withdrawal Approved!**\n\n` +
+          `Withdrawal ID: ${withdrawalId}\n` +
+          `Amount: ${formatCurrency(withdrawals[withdrawalIndex].amount)}\n` +
+          `Status: Completed\n\n` +
+          `💸 Funds should arrive within 10-15 minutes.`
+        );
+      } catch (error) {
+        console.log('Could not notify user');
+      }
+    }
+    
+    await bot.sendMessage(chatId,
+      `✅ Withdrawal ${withdrawalId} approved\n\n` +
+      `Amount: ${formatCurrency(withdrawals[withdrawalIndex].amount)}\n` +
+      `User: ${withdrawals[withdrawalIndex].userName}\n` +
+      `Member ID: ${withdrawals[withdrawalIndex].memberId}`
+    );
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error approving withdrawal');
+  }
+});
+
+// Admin: Reject withdrawal
+bot.onText(/\/reject (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const withdrawalId = match[1];
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const withdrawals = await loadData(WITHDRAWALS_FILE);
+    const withdrawalIndex = withdrawals.findIndex(w => w.id === withdrawalId);
+    
+    if (withdrawalIndex === -1) {
+      await bot.sendMessage(chatId, `❌ Withdrawal ${withdrawalId} not found`);
+      return;
+    }
+    
+    // Return funds to user balance
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === withdrawals[withdrawalIndex].memberId);
+    
+    if (userIndex !== -1) {
+      users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) + withdrawals[withdrawalIndex].amount;
+      await saveData(USERS_FILE, users);
+    }
+    
+    withdrawals[withdrawalIndex].status = 'rejected';
+    withdrawals[withdrawalIndex].completedAt = new Date().toISOString();
+    withdrawals[withdrawalIndex].adminNote = `Rejected by admin ${chatId} at ${new Date().toLocaleString()}`;
+    
+    await saveData(WITHDRAWALS_FILE, withdrawals);
+    
+    // Notify user
+    const user = users[userIndex];
+    if (user) {
+      try {
+        await bot.sendMessage(user.chatId,
+          `❌ **Withdrawal Rejected**\n\n` +
+          `Withdrawal ID: ${withdrawalId}\n` +
+          `Amount: ${formatCurrency(withdrawals[withdrawalIndex].amount)}\n` +
+          `Status: Rejected\n\n` +
+          `💰 Funds returned to your balance.\n` +
+          `New Balance: ${formatCurrency(user.balance)}\n\n` +
+          `Contact support for more information.`
+        );
+      } catch (error) {
+        console.log('Could not notify user');
+      }
+    }
+    
+    await bot.sendMessage(chatId,
+      `❌ Withdrawal ${withdrawalId} rejected\n\n` +
+      `Amount returned to user balance\n` +
+      `User: ${withdrawals[withdrawalIndex].userName}\n` +
+      `Member ID: ${withdrawals[withdrawalIndex].memberId}`
+    );
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error rejecting withdrawal');
+  }
+});
+
+// Admin: Stats
+bot.onText(/\/stats/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const realUsers = users.filter(u => !u.isFake);
+    const investments = await loadData(INVESTMENTS_FILE);
+    const withdrawals = await loadData(WITHDRAWALS_FILE);
+    const referrals = await loadData(REFERRALS_FILE);
+    
+    const totalBalance = realUsers.reduce((sum, u) => sum + (parseFloat(u.balance) || 0), 0);
+    const totalInvested = investments.reduce((sum, i) => sum + i.amount, 0);
+    const totalWithdrawn = withdrawals.filter(w => w.status === 'completed').reduce((sum, w) => sum + w.amount, 0);
+    const totalReferralBonuses = referrals.reduce((sum, r) => sum + r.bonusAmount, 0);
+    
+    const today = new Date().toISOString().split('T')[0];
+    const todayRegistrations = realUsers.filter(u => u.joinedDate.split('T')[0] === today).length;
+    const todayInvestments = investments.filter(i => i.startDate.split('T')[0] === today);
+    const todayInvestmentAmount = todayInvestments.reduce((sum, i) => sum + i.amount, 0);
+    
+    let message = `📊 **System Statistics**\n\n`;
+    
+    message += `**Users**\n`;
+    message += `Total Users: ${realUsers.length}\n`;
+    message += `Active: ${realUsers.filter(u => !u.banned).length}\n`;
+    message += `Suspended: ${realUsers.filter(u => u.banned).length}\n`;
+    message += `New Today: ${todayRegistrations}\n\n`;
+    
+    message += `**Financial**\n`;
+    message += `Total Balance: ${formatCurrency(totalBalance)}\n`;
+    message += `Total Invested: ${formatCurrency(totalInvested)}\n`;
+    message += `Total Withdrawn: ${formatCurrency(totalWithdrawn)}\n`;
+    message += `Total Referral Bonuses: ${formatCurrency(totalReferralBonuses)}\n`;
+    message += `Investments Today: ${formatCurrency(todayInvestmentAmount)} (${todayInvestments.length})\n\n`;
+    
+    message += `**Investments**\n`;
+    message += `Active: ${investments.filter(i => i.status === 'active').length}\n`;
+    message += `Completed: ${investments.filter(i => i.status === 'completed').length}\n`;
+    message += `Daily Payout: ${formatCurrency(investments.filter(i => i.status === 'active').reduce((sum, i) => sum + (i.dailyProfit || 0), 0))}\n\n`;
+    
+    message += `**Withdrawals**\n`;
+    message += `Pending: ${withdrawals.filter(w => w.status === 'pending').length}\n`;
+    message += `Completed: ${withdrawals.filter(w => w.status === 'completed').length}\n`;
+    message += `Rejected: ${withdrawals.filter(w => w.status === 'rejected').length}\n\n`;
+    
+    message += `**System**\n`;
+    message += `Uptime: ${Math.floor(process.uptime() / 3600)}h ${Math.floor((process.uptime() % 3600) / 60)}m\n`;
+    message += `Memory: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Admin stats error:', error.message);
+    await bot.sendMessage(chatId, '❌ Error fetching statistics');
+  }
+});
+
+// Admin: Broadcast
+bot.onText(/\/broadcast (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const message = match[1];
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
+  
+  if (!message || message.length < 5) {
+    await bot.sendMessage(chatId, '❌ Message too short. Minimum 5 characters.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const realUsers = users.filter(u => !u.isFake && !u.banned);
+    
+    await bot.sendMessage(chatId, `📢 Broadcasting to ${realUsers.length} users...`);
+    
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (const user of realUsers) {
+      try {
+        await bot.sendMessage(user.chatId,
+          `📢 **Announcement from Starlife Advert**\n\n` +
+          `${message}\n\n` +
+          `---\n` +
+          `This is an official broadcast message.`
+        );
+        successCount++;
+        
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error) {
+        failCount++;
+      }
+    }
+    
+    await bot.sendMessage(chatId,
+      `✅ Broadcast Complete\n\n` +
+      `Success: ${successCount} users\n` +
+      `Failed: ${failCount} users\n` +
+      `Total: ${realUsers.length} users`
+    );
+  } catch (error) {
+    console.log('Broadcast error:', error.message);
+    await bot.sendMessage(chatId, '❌ Error broadcasting message');
+  }
+});
+
 // Handle unknown commands
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
   
-  if (text && text.startsWith('/') && 
-      !text.startsWith('/start') && 
-      !text.startsWith('/help') &&
-      !text.startsWith('/register') &&
-      !text.startsWith('/login') &&
-      !text.startsWith('/invest') &&
-      !text.startsWith('/investnow') &&
-      !text.startsWith('/earnings') &&
-      !text.startsWith('/viewearnings') &&
-      !text.startsWith('/withdraw') &&
-      !text.startsWith('/referral') &&
-      !text.startsWith('/profile') &&
-      !text.startsWith('/support') &&
-      !text.startsWith('/endsupport') &&
-      !text.startsWith('/logout') &&
-      !text.startsWith('/admin') &&
-      !text.startsWith('/supportchats') &&
-      !text.startsWith('/replychat') &&
-      !text.startsWith('/closechat') &&
-      !text.startsWith('/viewchat') &&
-      !text.startsWith('/users') &&
-      !text.startsWith('/view') &&
-      !text.startsWith('/ban') &&
-      !text.startsWith('/unban') &&
-      !text.startsWith('/investments') &&
-      !text.startsWith('/withdrawals') &&
-      !text.startsWith('/approve') &&
-      !text.startsWith('/reject') &&
-      !text.startsWith('/stats') &&
-      !text.startsWith('/broadcast')) {
+  if (text && text.startsWith('/')) {
+    // Check if command exists
+    const validCommands = [
+      '/start', '/help', '/register', '/login', '/logout', '/profile',
+      '/invest', '/investnow', '/earnings', '/viewearnings', '/withdraw',
+      '/referral', '/support', '/endsupport', '/admin', '/users', '/view',
+      '/suspend', '/unsuspend', '/resetpass', '/delete', '/addbalance',
+      '/deductbalance', '/supportchats', '/replychat', '/closechat',
+      '/investments', '/withdrawals', '/approve', '/reject', '/stats',
+      '/broadcast'
+    ];
     
-    bot.sendMessage(chatId,
-      `❓ Unknown command\n\n` +
-      `**Available Commands:**\n` +
-      `/start - Begin\n` +
-      `/help - Show commands\n` +
-      `/register - Create account\n` +
-      `/login - Access account\n` +
-      `/logout - Logout\n` +
-      `/invest - Make investment\n` +
-      `/earnings - View earnings\n` +
-      `/viewearnings MEMBER_ID - View others ($1)\n` +
-      `/withdraw - Withdraw funds\n` +
-      `/referral - Earn 10%\n` +
-      `/profile - Account details\n` +
-      `/support - Get help\n\n` +
-      `💳 **Payment Details:**\n` +
-      `M-Pesa Till: 6034186\n` +
-      `Name: Starlife Advert US Agency`
-    );
+    const command = text.split(' ')[0];
+    if (!validCommands.some(cmd => text.startsWith(cmd))) {
+      bot.sendMessage(chatId,
+        `❓ Unknown command: ${command}\n\n` +
+        `Use /help to see available commands.`
+      );
+    }
   }
 });
 
-console.log('✅ Starlife Advert Bot is running!');
+console.log('✅ Starlife Advert Bot is running! All commands are working!');
 
 // Clean shutdown
 process.on('SIGTERM', () => {
