@@ -544,14 +544,6 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
     return;
   }
   
-  // Check if referral code is valid
-  if (referralCode) {
-    const referrer = users.find(u => u.referralCode === referralCode);
-    if (!referrer) {
-      await bot.sendMessage(chatId, `❌ Invalid referral code: ${referralCode}\n\nStarting registration without referral...`);
-    }
-  }
-  
   userSessions[chatId] = {
     step: 'awaiting_name',
     data: {
@@ -559,12 +551,31 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
     }
   };
   
-  await bot.sendMessage(chatId,
-    `📝 **Account Registration**\n\n` +
-    `Step 1/4: Enter your full name\n\n` +
-    `Example: John Doe\n` +
-    `Enter your name:`
-  );
+  let registrationMessage = `📝 **Account Registration**\n\n`;
+  
+  if (referralCode) {
+    // Check if referral code is valid
+    const referrer = users.find(u => u.referralCode === referralCode);
+    if (referrer) {
+      registrationMessage += `✅ **Referral Code Applied!**\n`;
+      registrationMessage += `Referred by: ${referrer.name}\n`;
+      registrationMessage += `You'll earn 10% bonus when you invest!\n\n`;
+    } else {
+      registrationMessage += `⚠️ **Invalid Referral Code:** ${referralCode}\n`;
+      registrationMessage += `Starting registration without referral...\n\n`;
+      userSessions[chatId].data.referralCode = null;
+    }
+  } else {
+    registrationMessage += `💡 **No Referral Code?**\n`;
+    registrationMessage += `If you have a referral code, type /register CODE\n`;
+    registrationMessage += `Example: /register REF-ABC123\n\n`;
+  }
+  
+  registrationMessage += `Step 1/4: Enter your full name\n\n` +
+                       `Example: John Doe\n` +
+                       `Enter your name:`;
+  
+  await bot.sendMessage(chatId, registrationMessage);
 });
 
 // Login command - Available to everyone (logged out users)
@@ -637,21 +648,26 @@ bot.onText(/\/profile/, async (msg) => {
   const user = await getLoggedInUser(chatId);
   if (!user) return; // Middleware already blocked
   
+  const referrals = await loadData(REFERRALS_FILE);
+  const userReferrals = referrals.filter(ref => ref.referrerId === user.memberId);
+  const totalReferralEarnings = userReferrals.reduce((sum, ref) => sum + ref.bonusAmount, 0);
+  
   const profileMessage = `👤 **Your Profile**\n\n` +
                         `**Account Details:**\n` +
                         `Name: ${user.name}\n` +
                         `Member ID: ${user.memberId}\n` +
                         `Email: ${user.email}\n` +
                         `Joined: ${new Date(user.joinedDate).toLocaleDateString()}\n` +
-                        `Last Login: ${new Date(user.lastLogin).toLocaleDateString()}\n\n` +
+                        `Last Login: ${new Date(user.lastLogin).toLocaleDateString()}\n` +
+                        `Referred By: ${user.referredBy || 'None'}\n\n` +
                         `**Financial Summary:**\n` +
                         `Current Balance: ${formatCurrency(user.balance)}\n` +
                         `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n` +
                         `Total Earned: ${formatCurrency(user.totalEarned || 0)}\n` +
-                        `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n` +
+                        `Referral Earnings: ${formatCurrency(totalReferralEarnings)}\n\n` +
                         `**Investment Stats:**\n` +
                         `Active Investments: ${user.activeInvestments || 0}\n` +
-                        `Total Referrals: ${user.referrals || 0}\n` +
+                        `Total Referrals: ${userReferrals.length}\n` +
                         `Referral Code: ${user.referralCode}\n\n` +
                         `**Account Status:** ${user.banned ? '🚫 SUSPENDED' : '✅ ACTIVE'}\n\n` +
                         `Use /support for profile changes`;
@@ -694,6 +710,10 @@ bot.onText(/\/earnings/, async (msg) => {
   const userInvestments = investments.filter(inv => inv.memberId === user.memberId);
   const activeInvestments = userInvestments.filter(inv => inv.status === 'active');
   
+  const referrals = await loadData(REFERRALS_FILE);
+  const userReferrals = referrals.filter(ref => ref.referrerId === user.memberId);
+  const totalReferralEarnings = userReferrals.reduce((sum, ref) => sum + ref.bonusAmount, 0);
+  
   let earningsMessage = `💰 **Your Earnings Dashboard**\n\n`;
   
   earningsMessage += `👤 **Account Summary**\n`;
@@ -701,8 +721,8 @@ bot.onText(/\/earnings/, async (msg) => {
   earningsMessage += `Member ID: ${user.memberId}\n`;
   earningsMessage += `Balance: ${formatCurrency(user.balance)}\n`;
   earningsMessage += `Total Earned: ${formatCurrency(user.totalEarned)}\n`;
-  earningsMessage += `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n`;
-  earningsMessage += `Total Referrals: ${user.referrals || 0}\n\n`;
+  earningsMessage += `Referral Earnings: ${formatCurrency(totalReferralEarnings)}\n`;
+  earningsMessage += `Total Referrals: ${userReferrals.length}\n\n`;
   
   earningsMessage += `📈 **Investment Summary**\n`;
   earningsMessage += `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n`;
@@ -987,6 +1007,15 @@ bot.on('message', async (msg) => {
       // Generate referral code
       const referralCode = `REF-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
       
+      // Check if referral code is valid
+      let referredBy = null;
+      if (session.data.referralCode) {
+        const referrer = users.find(u => u.referralCode === session.data.referralCode);
+        if (referrer) {
+          referredBy = session.data.referralCode;
+        }
+      }
+      
       // Create new user
       const newUser = {
         memberId: memberId,
@@ -1000,7 +1029,7 @@ bot.on('message', async (msg) => {
         referralEarnings: 0,
         referrals: 0,
         referralCode: referralCode,
-        referredBy: session.data.referralCode || null,
+        referredBy: referredBy,
         activeInvestments: 0,
         joinedDate: new Date().toISOString(),
         lastLogin: new Date().toISOString(),
@@ -1010,55 +1039,79 @@ bot.on('message', async (msg) => {
       users.push(newUser);
       await saveData(USERS_FILE, users);
       
+      // Handle referral tracking if user was referred
+      if (referredBy) {
+        const referrer = users.find(u => u.referralCode === referredBy);
+        if (referrer) {
+          // Update referrer's referral count
+          referrer.referrals = (referrer.referrals || 0) + 1;
+          
+          // Create referral record
+          const referrals = await loadData(REFERRALS_FILE);
+          referrals.push({
+            id: `REF-${Date.now()}`,
+            referrerId: referrer.memberId,
+            referrerName: referrer.name,
+            referrerCode: referrer.referralCode,
+            referredId: memberId,
+            referredName: session.data.name,
+            bonusAmount: 0, // Will be added when referred user invests
+            status: 'pending',
+            date: new Date().toISOString(),
+            investmentAmount: 0
+          });
+          
+          await saveData(REFERRALS_FILE, referrals);
+          await saveData(USERS_FILE, users);
+          
+          // Notify referrer
+          if (referrer.chatId && !loggedOutUsers.has(referrer.chatId)) {
+            try {
+              await bot.sendMessage(referrer.chatId,
+                `🎉 **New Referral!**\n\n` +
+                `${session.data.name} registered using your referral code!\n` +
+                `You will earn 10% when they make their first investment.\n\n` +
+                `Total Referrals: ${referrer.referrals}`
+              );
+            } catch (error) {
+              console.log('Could not notify referrer');
+            }
+          }
+        }
+      }
+      
       // Clear session
       delete userSessions[chatId];
       
       // Clear from logged out users if they were there
       loggedOutUsers.delete(chatId.toString());
       
-      // Handle referral bonus if applicable
-      if (session.data.referralCode) {
-        const referrer = users.find(u => u.referralCode === session.data.referralCode);
-        if (referrer) {
-          referrer.referrals = (referrer.referrals || 0) + 1;
-          
-          const referrals = await loadData(REFERRALS_FILE);
-          referrals.push({
-            id: `REF-${Date.now()}`,
-            referrerId: referrer.memberId,
-            referredId: memberId,
-            referredName: session.data.name,
-            bonusAmount: 0, // Will be added when referred user invests
-            status: 'pending',
-            date: new Date().toISOString()
-          });
-          
-          await saveData(REFERRALS_FILE, referrals);
-          await saveData(USERS_FILE, users);
-        }
+      // Welcome message
+      let welcomeMessage = `🎉 **Registration Successful!**\n\n` +
+                          `Welcome to Starlife Advert, ${session.data.name}!\n\n` +
+                          `**Account Details:**\n` +
+                          `Member ID: ${memberId}\n` +
+                          `Referral Code: ${referralCode}\n`;
+      
+      if (referredBy) {
+        welcomeMessage += `Referred By: ${referredBy}\n`;
       }
       
-      // Welcome message
-      const welcomeMessage = `🎉 **Registration Successful!**\n\n` +
-                            `Welcome to Starlife Advert, ${session.data.name}!\n\n` +
-                            `**Account Details:**\n` +
-                            `Member ID: ${memberId}\n` +
-                            `Referral Code: ${referralCode}\n\n` +
-                            `**To Start Earning:**\n` +
-                            `1. Use /invest to make your first investment\n` +
-                            `2. Minimum investment: $10\n` +
-                            `3. Earn 2% daily profit\n` +
-                            `4. Share your referral code to earn 10%!\n\n` +
-                            `**Payment Details:**\n` +
-                            `💳 M-Pesa Till: 6034186\n` +
-                            `🏢 Name: Starlife Advert US Agency\n\n` +
-                            `**Quick Commands:**\n` +
-                            `/invest - Make investment\n` +
-                            `/earnings - View earnings\n` +
-                            `/referral - Share & earn 10%\n` +
-                            `/profile - Account details\n` +
-                            `/support - Contact support\n\n` +
-                            `✅ You are now logged in!`;
+      welcomeMessage += `\n**To Start Earning:**\n` +
+                       `1. Use /invest to make your first investment\n` +
+                       `2. Minimum investment: $10\n` +
+                       `3. Earn 2% daily profit\n` +
+                       `4. Share your referral code to earn 10%!\n\n` +
+                       `**Payment Details:**\n` +
+                       `💳 M-Pesa Till: 6034186\n` +
+                       `🏢 Name: Starlife Advert US Agency\n\n` +
+                       `**Quick Commands:**\n` +
+                       `/invest - Make investment\n` +
+                       `/earnings - View earnings\n` +
+                       `/referral - Share & earn 10%\n` +
+                       `/profile - Account details\n` +
+                       `/support - Contact support\n\n` +
+                       `✅ You are now logged in!`;
       
       await bot.sendMessage(chatId, welcomeMessage);
       
@@ -1728,6 +1781,8 @@ bot.onText(/\/admin/, async (msg) => {
                       `/withdrawals - List withdrawals\n` +
                       `/approve WDL_ID - Approve withdrawal\n` +
                       `/reject WDL_ID - Reject withdrawal\n\n` +
+                      `👥 **Referral Management:**\n` +
+                      `/referrals - List all referrals\n\n` +
                       `🆘 **Support Management:**\n` +
                       `/supportchats - View active chats\n` +
                       `/replychat CHAT_ID MESSAGE - Reply to chat\n` +
@@ -1791,6 +1846,9 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
   const userInvestments = investments.filter(inv => inv.memberId === memberId);
   const withdrawals = await loadData(WITHDRAWALS_FILE);
   const userWithdrawals = withdrawals.filter(wdl => wdl.memberId === memberId);
+  const referrals = await loadData(REFERRALS_FILE);
+  const userReferrals = referrals.filter(ref => ref.referrerId === memberId);
+  const userReferredBy = referrals.filter(ref => ref.referredId === memberId);
   
   const userMessage = `👤 **User Details**\n\n` +
                      `**Account Info:**\n` +
@@ -1800,6 +1858,8 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                      `Chat ID: ${user.chatId}\n` +
                      `Joined: ${new Date(user.joinedDate).toLocaleString()}\n` +
                      `Last Login: ${new Date(user.lastLogin).toLocaleString()}\n` +
+                     `Referral Code: ${user.referralCode}\n` +
+                     `Referred By: ${user.referredBy || 'None'}\n` +
                      `Status: ${user.banned ? '🚫 SUSPENDED' : '✅ ACTIVE'}\n\n` +
                      `**Financial Info:**\n` +
                      `Balance: ${formatCurrency(user.balance)}\n` +
@@ -1808,8 +1868,9 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                      `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n` +
                      `**Stats:**\n` +
                      `Referrals: ${user.referrals || 0}\n` +
-                     `Referral Code: ${user.referralCode}\n` +
-                     `Active Investments: ${user.activeInvestments || 0}\n\n` +
+                     `Active Investments: ${user.activeInvestments || 0}\n` +
+                     `Total Referred Users: ${userReferrals.length}\n` +
+                     `Referred By: ${userReferredBy.length > 0 ? userReferredBy[0].referrerName : 'None'}\n\n` +
                      `**Investment History:** ${userInvestments.length}\n` +
                      `**Withdrawal History:** ${userWithdrawals.length}\n\n` +
                      `**Admin Actions:**\n` +
@@ -2121,6 +2182,7 @@ bot.onText(/\/approve (.+)/, async (msg, match) => {
           referrals[referralIndex].bonusAmount = bonusAmount;
           referrals[referralIndex].status = 'paid';
           referrals[referralIndex].paidDate = new Date().toISOString();
+          referrals[referralIndex].investmentAmount = investments[investmentIndex].amount;
         }
         
         await saveData(REFERRALS_FILE, referrals);
@@ -2132,7 +2194,7 @@ bot.onText(/\/approve (.+)/, async (msg, match) => {
           memberId: referrer.memberId,
           type: 'referral_bonus',
           amount: bonusAmount,
-          description: `Referral bonus from ${investor.name}'s investment`,
+          description: `Referral bonus from ${investor.name}'s investment (${formatCurrency(investments[investmentIndex].amount)})`,
           date: new Date().toISOString()
         });
         await saveData(TRANSACTIONS_FILE, transactions);
@@ -2142,7 +2204,8 @@ bot.onText(/\/approve (.+)/, async (msg, match) => {
           try {
             await bot.sendMessage(referrer.chatId,
               `🎉 **Referral Bonus Earned!**\n\n` +
-              `You earned ${formatCurrency(bonusAmount)} from ${investor.name}'s investment!\n` +
+              `${investor.name} made an investment of ${formatCurrency(investments[investmentIndex].amount)}\n` +
+              `You earned 10% bonus: ${formatCurrency(bonusAmount)}\n\n` +
               `New balance: ${formatCurrency(referrer.balance)}`
             );
           } catch (error) {
@@ -2345,6 +2408,39 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
   }
 });
 
+// View referrals
+bot.onText(/\/referrals/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  const referrals = await loadData(REFERRALS_FILE);
+  const paidReferrals = referrals.filter(ref => ref.status === 'paid');
+  const pendingReferrals = referrals.filter(ref => ref.status === 'pending');
+  
+  const message = `👥 **Referral Summary**\n\n` +
+                 `**Total Referrals:** ${referrals.length}\n` +
+                 `**Paid Referrals:** ${paidReferrals.length}\n` +
+                 `**Pending Referrals:** ${pendingReferrals.length}\n\n` +
+                 `**Total Bonus Paid:** ${formatCurrency(paidReferrals.reduce((sum, ref) => sum + ref.bonusAmount, 0))}\n\n` +
+                 `**Recent Referrals:**\n`;
+  
+  let detailedMessage = message;
+  referrals.slice(-10).reverse().forEach((ref, index) => {
+    detailedMessage += `\n${index + 1}. ${ref.referrerName} → ${ref.referredName}\n`;
+    detailedMessage += `💰 ${formatCurrency(ref.bonusAmount)} | ${ref.status === 'paid' ? '✅' : '⏳'}\n`;
+    if (ref.investmentAmount > 0) {
+      detailedMessage += `Investment: ${formatCurrency(ref.investmentAmount)}\n`;
+    }
+    detailedMessage += `Date: ${new Date(ref.date).toLocaleDateString()}\n`;
+  });
+  
+  await bot.sendMessage(chatId, detailedMessage);
+});
+
 bot.onText(/\/stats/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -2357,14 +2453,17 @@ bot.onText(/\/stats/, async (msg) => {
   const investments = await loadData(INVESTMENTS_FILE);
   const withdrawals = await loadData(WITHDRAWALS_FILE);
   const supportChats = await loadData(SUPPORT_CHATS_FILE);
+  const referrals = await loadData(REFERRALS_FILE);
   
   const totalBalance = users.reduce((sum, user) => sum + parseFloat(user.balance || 0), 0);
   const totalInvested = users.reduce((sum, user) => sum + parseFloat(user.totalInvested || 0), 0);
   const totalEarned = users.reduce((sum, user) => sum + parseFloat(user.totalEarned || 0), 0);
+  const totalReferralEarnings = referrals.reduce((sum, ref) => sum + ref.bonusAmount, 0);
   const activeUsers = users.filter(u => !u.banned).length;
   const activeInvestments = investments.filter(i => i.status === 'active').length;
   const pendingWithdrawals = withdrawals.filter(w => w.status === 'pending').length;
   const activeSupportChats = supportChats.filter(c => c.status === 'active').length;
+  const paidReferrals = referrals.filter(ref => ref.status === 'paid').length;
   
   const statsMessage = `📊 **System Statistics**\n\n` +
                       `**Users:**\n` +
@@ -2382,6 +2481,10 @@ bot.onText(/\/stats/, async (msg) => {
                       `• Total Withdrawals: ${withdrawals.length}\n` +
                       `• Pending Withdrawals: ${pendingWithdrawals}\n` +
                       `• Total Withdrawn: ${formatCurrency(withdrawals.filter(w => w.status === 'approved').reduce((sum, w) => sum + w.amount, 0))}\n\n` +
+                      `**Referrals:**\n` +
+                      `• Total Referrals: ${referrals.length}\n` +
+                      `• Paid Referrals: ${paidReferrals}\n` +
+                      `• Total Bonus Paid: ${formatCurrency(totalReferralEarnings)}\n\n` +
                       `**Support:**\n` +
                       `• Active Chats: ${activeSupportChats}\n` +
                       `• Total Chats: ${supportChats.length}\n\n` +
@@ -2448,7 +2551,7 @@ bot.on('message', (msg) => {
       '/suspend', '/unsuspend', '/resetpass', '/delete', '/addbalance',
       '/deductbalance', '/supportchats', '/replychat', '/closechat',
       '/investments', '/withdrawals', '/approve', '/reject', '/stats',
-      '/broadcast'
+      '/broadcast', '/referrals'
     ];
     
     const command = text.split(' ')[0];
@@ -2461,7 +2564,7 @@ bot.on('message', (msg) => {
   }
 });
 
-console.log('✅ Starlife Advert Bot is running! All fixes applied!');
+console.log('✅ Starlife Advert Bot is running! Referral system restored!');
 
 // Clean shutdown
 process.on('SIGTERM', () => {
