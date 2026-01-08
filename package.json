@@ -1,10 +1,11 @@
 {
   "name": "telegram-earnings-bot",
-  "version": "1.0.0",
-  "description": "Telegram bot for earnings lookup",
+  "version": "2.0.0",
+  "description": "Enhanced Telegram bot for earnings with user accounts and admin features",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
@@ -13,5 +14,14 @@
   },
   "engines": {
     "node": "18.x"
-  }
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "earnings",
+    "crypto",
+    "withdrawal"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
 }
