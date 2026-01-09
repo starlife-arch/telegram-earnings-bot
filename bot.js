@@ -632,10 +632,91 @@ bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
   const session = userSessions[chatId];
   
+  // Handle investment proof photos
+  if (session && session.step === 'awaiting_investment_proof') {
+    try {
+      // Get the best quality photo (last in array is highest quality)
+      const photo = msg.photo[msg.photo.length - 1];
+      const fileId = photo.file_id;
+      const caption = msg.caption || '';
+      
+      // Store investment with pending status
+      const investments = await loadData(INVESTMENTS_FILE);
+      const investmentId = `INV-${Date.now()}`;
+      
+      const investment = {
+        id: investmentId,
+        memberId: session.data.memberId,
+        amount: session.data.amount,
+        status: 'pending', // Changed from 'active' to 'pending'
+        date: new Date().toISOString(),
+        daysActive: 0,
+        totalProfit: 0,
+        proofMediaId: `MEDIA-${Date.now()}`,
+        proofCaption: caption || `Payment proof for $${session.data.amount}`
+      };
+      
+      investments.push(investment);
+      await saveData(INVESTMENTS_FILE, investments);
+      
+      // Store media file
+      await storeMediaFile({
+        id: `MEDIA-${Date.now()}`,
+        fileId: fileId,
+        fileType: 'photo',
+        caption: `Payment proof for ${formatCurrency(session.data.amount)}`,
+        investmentId: investmentId,
+        sender: session.data.memberId,
+        timestamp: new Date().toISOString()
+      });
+      
+      delete userSessions[chatId];
+      
+      await bot.sendMessage(chatId,
+        `✅ **Payment Proof Received!**\n\n` +
+        `Amount: ${formatCurrency(session.data.amount)}\n` +
+        `Investment ID: ${investmentId}\n\n` +
+        `Your investment is pending approval.\n` +
+        `Our team will review your payment proof and activate your investment within 15 minutes.\n\n` +
+        `You will be notified once it's approved.`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const users = await loadData(USERS_FILE);
+        const user = users.find(u => u.memberId === session.data.memberId);
+        
+        const adminMessage = `📈 **New Investment Request**\n\n` +
+                            `Investment ID: ${investmentId}\n` +
+                            `User: ${user.name} (${session.data.memberId})\n` +
+                            `Amount: ${formatCurrency(session.data.amount)}\n` +
+                            `Date: ${new Date().toLocaleString()}\n\n` +
+                            `**Approve:** /approveinvestment ${investmentId}\n` +
+                            `**Reject:** /rejectinvestment ${investmentId}\n\n` +
+                            `**View Proof:** /viewproof ${investmentId}`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+      
+      return;
+    } catch (error) {
+      console.log('Error handling investment photo:', error.message);
+      await bot.sendMessage(chatId, '❌ Error sending payment proof. Please try again.');
+    }
+  }
+  
   // Only handle photos in active support chats
   if (!session || !(session.step === 'support_chat' || 
                     session.step === 'support_loggedout_chat' || 
-                    session.step === 'universal_support_chat')) {
+                    session.step === 'universal_support_chat' ||
+                    session.step === 'appeal_chat')) {
     return;
   }
   
@@ -660,7 +741,8 @@ bot.on('document', async (msg) => {
   // Only handle documents in active support chats
   if (!session || !(session.step === 'support_chat' || 
                     session.step === 'support_loggedout_chat' || 
-                    session.step === 'universal_support_chat')) {
+                    session.step === 'universal_support_chat' ||
+                    session.step === 'appeal_chat')) {
     return;
   }
   
@@ -684,7 +766,8 @@ bot.on('video', async (msg) => {
   // Only handle videos in active support chats
   if (!session || !(session.step === 'support_chat' || 
                     session.step === 'support_loggedout_chat' || 
-                    session.step === 'universal_support_chat')) {
+                    session.step === 'universal_support_chat' ||
+                    session.step === 'appeal_chat')) {
     return;
   }
   
@@ -707,7 +790,8 @@ bot.on('voice', async (msg) => {
   // Only handle voice in active support chats
   if (!session || !(session.step === 'support_chat' || 
                     session.step === 'support_loggedout_chat' || 
-                    session.step === 'universal_support_chat')) {
+                    session.step === 'universal_support_chat' ||
+                    session.step === 'appeal_chat')) {
     return;
   }
   
@@ -743,7 +827,14 @@ bot.onText(/\/start/, async (msg) => {
     
     if (user) {
       if (user.banned) {
-        await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
+        await bot.sendMessage(chatId,
+          `🚫 **Account Suspended**\n\n` +
+          `Your account has been suspended by admin.\n\n` +
+          `**You can still:**\n` +
+          `/appeal - Submit appeal\n` +
+          `/support - Contact support\n\n` +
+          `If you believe this is an error, please submit an appeal.`
+        );
         return;
       }
       
@@ -798,7 +889,7 @@ bot.onText(/\/start/, async (msg) => {
   await bot.sendMessage(chatId, fakeMessage);
 });
 
-// Invest command
+// Invest command - NEW FIXED FLOW
 bot.onText(/\/invest/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -818,6 +909,9 @@ bot.onText(/\/invest/, async (msg) => {
   
   await bot.sendMessage(chatId,
     `💰 **Make Investment**\n\n` +
+    `**Payment Method:**\n` +
+    `M-Pesa Till: 6034186\n` +
+    `Name: Starlife Advert US Agency\n\n` +
     `Minimum Investment: $10\n` +
     `Maximum Investment: $10,000\n` +
     `Daily Profit: 2%\n` +
@@ -859,7 +953,7 @@ bot.onText(/\/earnings/, async (msg) => {
   await bot.sendMessage(chatId, message);
 });
 
-// Profile command
+// Profile command - FIXED REFERRAL
 bot.onText(/\/profile/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -889,13 +983,13 @@ bot.onText(/\/profile/, async (msg) => {
   message += `Total Referrals: ${user.referrals || 0}\n`;
   message += `Successful Referrals: ${successfulReferrals.length}\n`;
   message += `Your Code: ${user.referralCode}\n\n`;
-  message += `**Share your referral link:**\n`;
-  message += `https://t.me/your_bot_username?start=${user.referralCode}`;
+  message += `**Share your code:** ${user.referralCode}\n`;
+  message += `Tell friends to use: /register ${user.referralCode}`;
   
   await bot.sendMessage(chatId, message);
 });
 
-// Referral command
+// Referral command - FIXED REFERRAL
 bot.onText(/\/referral/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -915,9 +1009,7 @@ bot.onText(/\/referral/, async (msg) => {
   message += `Total Referrals: ${user.referrals || 0}\n`;
   message += `Total Earned from Referrals: ${formatCurrency(user.referralEarnings || 0)}\n\n`;
   message += `**How to share:**\n`;
-  message += `1. Share this link:\n`;
-  message += `https://t.me/your_bot_username?start=${user.referralCode}\n\n`;
-  message += `2. Or tell friends to use:\n`;
+  message += `Tell your friends to use the command:\n`;
   message += `/register ${user.referralCode}\n\n`;
   message += `**Your Referrals:**\n`;
   
@@ -1122,11 +1214,6 @@ bot.onText(/\/support/, async (msg) => {
     const users = await loadData(USERS_FILE);
     const user = users.find(u => u.chatId === chatId.toString());
     
-    if (user && user.banned) {
-      await bot.sendMessage(chatId, '🚫 Your account has been suspended.');
-      return;
-    }
-    
     // Check for active support chat
     const activeChat = await getActiveSupportChat(user.memberId);
     
@@ -1141,7 +1228,16 @@ bot.onText(/\/support/, async (msg) => {
         }
       };
       
-      await bot.sendMessage(chatId,
+      const welcomeMessage = user.banned ? 
+        `🚫 **Account Suspended - Support Chat**\n\n` +
+        `Your account has been suspended, but you can still contact support.\n\n` +
+        `Type your message below to appeal or ask for help:\n\n` +
+        `**You can send:**\n` +
+        `• Text messages\n` +
+        `• Photos (screenshots)\n` +
+        `• Documents (PDFs, etc.)\n\n` +
+        `Type /endsupport to end this chat` :
+        
         `💬 **Support Chat (Active)**\n\n` +
         `You have an active support conversation.\n` +
         `Type your message below:\n\n` +
@@ -1152,30 +1248,41 @@ bot.onText(/\/support/, async (msg) => {
         `• Videos\n` +
         `• Voice messages\n\n` +
         `Last message from support: "${activeChat.messages.slice(-1)[0]?.message || 'No messages yet'}"\n\n` +
-        `Type /endsupport to end this chat`
-      );
-    } else {
-      // Start new support chat
-      userSessions[chatId] = {
-        step: 'support_topic',
-        data: {
-          memberId: user.memberId,
-          userName: user.name
-        }
-      };
+        `Type /endsupport to end this chat`;
       
-      await bot.sendMessage(chatId,
-        `🆘 **Support Center**\n\n` +
-        `Please select your issue:\n\n` +
-        `1️⃣ Account Issues\n` +
-        `2️⃣ Investment Problems\n` +
-        `3️⃣ Withdrawal Help\n` +
-        `4️⃣ Referral Issues\n` +
-        `5️⃣ Payment Proof/Upload\n` +
-        `6️⃣ Other\n\n` +
-        `Reply with the number (1-6):`
-      );
+      await bot.sendMessage(chatId, welcomeMessage);
+      return;
     }
+    
+    // Start new support chat
+    userSessions[chatId] = {
+      step: 'support_topic',
+      data: {
+        memberId: user.memberId,
+        userName: user.name
+      }
+    };
+    
+    const supportMessage = user.banned ? 
+      `🚫 **Account Suspended - Appeal Center**\n\n` +
+      `Your account has been suspended. Please select your issue:\n\n` +
+      `1️⃣ Appeal Suspension\n` +
+      `2️⃣ Account Recovery\n` +
+      `3️⃣ Payment Issues\n` +
+      `4️⃣ Other Issues\n\n` +
+      `Reply with the number (1-4):` :
+      
+      `🆘 **Support Center**\n\n` +
+      `Please select your issue:\n\n` +
+      `1️⃣ Account Issues\n` +
+      `2️⃣ Investment Problems\n` +
+      `3️⃣ Withdrawal Help\n` +
+      `4️⃣ Referral Issues\n` +
+      `5️⃣ Payment Proof/Upload\n` +
+      `6️⃣ Other\n\n` +
+      `Reply with the number (1-6):`;
+    
+    await bot.sendMessage(chatId, supportMessage);
   } else {
     // Universal support for everyone (logged out or no account)
     userSessions[chatId] = {
@@ -1217,7 +1324,7 @@ bot.onText(/\/endsupport/, async (msg) => {
   const chatId = msg.chat.id;
   
   const session = userSessions[chatId];
-  if (session && (session.step === 'support_chat' || session.step === 'support_loggedout_chat' || session.step === 'universal_support_chat')) {
+  if (session && (session.step === 'support_chat' || session.step === 'support_loggedout_chat' || session.step === 'universal_support_chat' || session.step === 'appeal_chat')) {
     const supportChats = await loadData(SUPPORT_CHATS_FILE);
     const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
     
@@ -1238,6 +1345,46 @@ bot.onText(/\/endsupport/, async (msg) => {
   } else {
     await bot.sendMessage(chatId, '❌ No active support chat to end.');
   }
+});
+
+// Appeal command for suspended users
+bot.onText(/\/appeal/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  const users = await loadData(USERS_FILE);
+  const currentUser = users.find(u => u.memberId === user.memberId);
+  
+  if (!currentUser.banned) {
+    await bot.sendMessage(chatId, '✅ Your account is not suspended. Use /support for other issues.');
+    return;
+  }
+  
+  userSessions[chatId] = {
+    step: 'appeal_message',
+    data: {
+      memberId: user.memberId,
+      userName: user.name
+    }
+  };
+  
+  await bot.sendMessage(chatId,
+    `📝 **Submit Appeal**\n\n` +
+    `Your account has been suspended. You can submit an appeal here.\n\n` +
+    `**Please include:**\n` +
+    `1. Why you believe your account was wrongly suspended\n` +
+    `2. Any evidence or screenshots\n` +
+    `3. Your contact information\n\n` +
+    `Type your appeal message below:\n` +
+    `(You can also send photos/documents)`
+  );
 });
 
 // Register command
@@ -1579,11 +1726,11 @@ bot.on('message', async (msg) => {
       // Clear session
       delete userSessions[chatId];
       
-      const welcomeMessage = `👋 Welcome back, ${user.name}!\n\n` +
-                            `💰 Balance: ${formatCurrency(user.balance || 0)}\n` +
-                            `📈 Total Earned: ${formatCurrency(user.totalEarned || 0)}\n` +
-                            `👥 Referrals: ${user.referrals || 0}\n` +
-                            `🔗 Your Code: ${user.referralCode}\n\n`;
+      let welcomeMessage = `👋 Welcome back, ${user.name}!\n\n` +
+                          `💰 Balance: ${formatCurrency(user.balance || 0)}\n` +
+                          `📈 Total Earned: ${formatCurrency(user.totalEarned || 0)}\n` +
+                          `👥 Referrals: ${user.referrals || 0}\n` +
+                          `🔗 Your Code: ${user.referralCode}\n\n`;
       
       // Check for offline messages
       if (user.offlineMessages && user.offlineMessages.length > 0) {
@@ -1608,7 +1755,7 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, welcomeMessage);
     }
     
-    // Handle investment amount
+    // Handle investment amount - NEW FIXED FLOW
     else if (session.step === 'awaiting_investment_amount') {
       const amount = parseFloat(text);
       
@@ -1622,72 +1769,13 @@ bot.on('message', async (msg) => {
         return;
       }
       
-      const users = await loadData(USERS_FILE);
-      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
-      
-      if (userIndex === -1) {
-        await bot.sendMessage(chatId, '❌ User not found.');
-        delete userSessions[chatId];
-        return;
-      }
-      
-      if ((users[userIndex].balance || 0) < amount) {
-        await bot.sendMessage(chatId,
-          `❌ **Insufficient Balance**\n\n` +
-          `Required: ${formatCurrency(amount)}\n` +
-          `Your Balance: ${formatCurrency(users[userIndex].balance || 0)}\n\n` +
-          `Please add funds first.`
-        );
-        delete userSessions[chatId];
-        return;
-      }
-      
-      // Deduct from balance
-      users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) - amount;
-      users[userIndex].totalInvested = (parseFloat(users[userIndex].totalInvested) || 0) + amount;
-      users[userIndex].activeInvestments = (users[userIndex].activeInvestments || 0) + 1;
-      
-      // Create investment
-      const investments = await loadData(INVESTMENTS_FILE);
-      const investmentId = `INV-${Date.now()}`;
-      
-      const investment = {
-        id: investmentId,
-        memberId: session.data.memberId,
-        amount: amount,
-        status: 'active',
-        date: new Date().toISOString(),
-        daysActive: 0,
-        totalProfit: 0
-      };
-      
-      investments.push(investment);
-      
-      await saveData(USERS_FILE, users);
-      await saveData(INVESTMENTS_FILE, investments);
-      
-      // Record transaction
-      const transactions = await loadData(TRANSACTIONS_FILE);
-      transactions.push({
-        id: `TRX-INV-${Date.now()}`,
-        memberId: session.data.memberId,
-        type: 'investment',
-        amount: -amount,
-        description: `Investment #${investmentId}`,
-        date: new Date().toISOString()
-      });
-      await saveData(TRANSACTIONS_FILE, transactions);
-      
-      delete userSessions[chatId];
+      session.data.amount = amount;
+      session.step = 'awaiting_investment_proof';
       
       await bot.sendMessage(chatId,
-        `✅ **Investment Successful!**\n\n` +
-        `Amount: ${formatCurrency(amount)}\n` +
-        `Investment ID: ${investmentId}\n` +
-        `Daily Profit: ${formatCurrency(calculateDailyProfit(amount))}\n` +
-        `Duration: 30 days\n\n` +
-        `Your investment is now active and earning 2% daily!\n` +
-        `Check your earnings with /earnings`
+        `✅ Amount: ${formatCurrency(amount)}\n\n` +
+        `Now, please send a screenshot or photo of your payment proof (M-Pesa receipt).\n\n` +
+        `You can send a photo or document.`
       );
     }
     
@@ -1998,36 +2086,175 @@ bot.on('message', async (msg) => {
       }
     }
     
-    // Handle regular support topics
-    else if (session.step === 'support_topic') {
-      const topicNumber = parseInt(text);
-      const topics = [
-        'Account Issues',
-        'Investment Problems',
-        'Withdrawal Help',
-        'Referral Issues',
-        'Payment Proof/Upload',
-        'Other'
-      ];
+    // Handle appeal message
+    else if (session.step === 'appeal_message') {
+      const supportChats = await loadData(SUPPORT_CHATS_FILE);
       
-      if (isNaN(topicNumber) || topicNumber < 1 || topicNumber > 6) {
-        await bot.sendMessage(chatId, '❌ Please enter a number between 1-6:');
+      const chatIdStr = `APPEAL-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+      
+      const newChat = {
+        id: chatIdStr,
+        userId: session.data.memberId,
+        userName: session.data.userName,
+        topic: 'Account Suspension Appeal',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [{
+          sender: 'user',
+          message: `[APPEAL] ${text}`,
+          timestamp: new Date().toISOString()
+        }],
+        adminReplied: false,
+        isAppeal: true
+      };
+      
+      supportChats.push(newChat);
+      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      
+      session.step = 'appeal_chat';
+      session.data.chatId = chatIdStr;
+      
+      await bot.sendMessage(chatId,
+        `✅ **Appeal Submitted!**\n\n` +
+        `Appeal ID: ${chatIdStr}\n\n` +
+        `Our team will review your appeal within 24 hours.\n` +
+        `You can continue sending additional information.\n\n` +
+        `Type /endsupport to end appeal chat`
+      );
+      
+      // Notify admins with URGENT priority
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `🚨 **URGENT: New Appeal**\n\n` +
+                            `Chat ID: ${chatIdStr}\n` +
+                            `User: ${session.data.userName} (${session.data.memberId})\n` +
+                            `Type: Account Suspension Appeal\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${chatIdStr} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    else if (session.step === 'appeal_chat') {
+      // Handle appeal chat messages
+      const supportChats = await loadData(SUPPORT_CHATS_FILE);
+      const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
+      
+      if (chatIndex === -1) {
+        await bot.sendMessage(chatId, '❌ Appeal chat not found. Please start new appeal with /appeal');
+        delete userSessions[chatId];
         return;
       }
       
-      const topic = topics[topicNumber - 1];
-      session.data.topic = topic;
-      session.step = 'support_message';
+      supportChats[chatIndex].messages.push({
+        sender: 'user',
+        message: text,
+        timestamp: new Date().toISOString()
+      });
+      supportChats[chatIndex].updatedAt = new Date().toISOString();
+      supportChats[chatIndex].adminReplied = false;
       
-      const extraInstructions = topicNumber === 5 ? 
-        '\n**You can send payment proof as:**\n• Photo (M-Pesa screenshot)\n• Document (bank statement)\n• Video (screen recording)\n\n' : '';
+      await saveData(SUPPORT_CHATS_FILE, supportChats);
       
       await bot.sendMessage(chatId,
-        `✅ Topic: ${topic}\n\n` +
-        `Please describe your issue in detail:${extraInstructions}\n` +
-        `Type your message below:\n` +
-        `(You can also send photos/documents directly)`
+        `✅ **Appeal message sent**\n\n` +
+        `Our team will respond to your appeal shortly.\n\n` +
+        `Type /endsupport to end appeal chat`
       );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const chat = supportChats[chatIndex];
+        const adminMessage = `💬 **New Appeal Message**\n\n` +
+                            `Chat ID: ${session.data.chatId}\n` +
+                            `User: ${chat.userName} (${chat.userId})\n` +
+                            `Type: Account Suspension Appeal\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${session.data.chatId} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    
+    // Handle regular support topics
+    else if (session.step === 'support_topic') {
+      const topicNumber = parseInt(text);
+      
+      // Check if user is banned to show different topics
+      const users = await loadData(USERS_FILE);
+      const user = users.find(u => u.memberId === session.data.memberId);
+      const isBanned = user ? user.banned : false;
+      
+      if (isBanned) {
+        // Banned user topics
+        if (isNaN(topicNumber) || topicNumber < 1 || topicNumber > 4) {
+          await bot.sendMessage(chatId, '❌ Please enter a number between 1-4:');
+          return;
+        }
+        
+        const bannedTopics = [
+          'Appeal Suspension',
+          'Account Recovery',
+          'Payment Issues',
+          'Other Issues'
+        ];
+        
+        const topic = bannedTopics[topicNumber - 1];
+        session.data.topic = `SUSPENDED - ${topic}`;
+        session.step = 'support_message';
+        
+        await bot.sendMessage(chatId,
+          `✅ Topic: ${topic}\n\n` +
+          `Please explain your situation in detail:\n` +
+          `• Why you believe your account was wrongly suspended\n` +
+          `• Any evidence to support your appeal\n` +
+          `• Your contact information\n\n` +
+          `Type your appeal message below:`
+        );
+      } else {
+        // Regular user topics
+        if (isNaN(topicNumber) || topicNumber < 1 || topicNumber > 6) {
+          await bot.sendMessage(chatId, '❌ Please enter a number between 1-6:');
+          return;
+        }
+        
+        const topics = [
+          'Account Issues',
+          'Investment Problems',
+          'Withdrawal Help',
+          'Referral Issues',
+          'Payment Proof/Upload',
+          'Other'
+        ];
+        
+        const topic = topics[topicNumber - 1];
+        session.data.topic = topic;
+        session.step = 'support_message';
+        
+        const extraInstructions = topicNumber === 5 ? 
+          '\n**You can send payment proof as:**\n• Photo (M-Pesa screenshot)\n• Document (bank statement)\n• Video (screen recording)\n\n' : '';
+        
+        await bot.sendMessage(chatId,
+          `✅ Topic: ${topic}\n\n` +
+          `Please describe your issue in detail:${extraInstructions}\n` +
+          `Type your message below:\n` +
+          `(You can also send photos/documents directly)`
+        );
+      }
     }
     else if (session.step === 'support_message') {
       // Create or find support chat
@@ -2201,10 +2428,11 @@ bot.onText(/\/admin/, async (msg) => {
                       `/deductbalance USER_ID AMOUNT - Deduct balance\n\n` +
                       `📈 **Investment Management:**\n` +
                       `/investments - List all investments\n` +
-                      `/approve INV_ID - Approve investment\n` +
-                      `/reject INV_ID - Reject investment\n` +
+                      `/approveinvestment INV_ID - Approve investment\n` +
+                      `/rejectinvestment INV_ID - Reject investment\n` +
                       `/manualinv USER_ID AMOUNT - Add manual investment\n` +
-                      `/deductinv USER_ID AMOUNT - Deduct investment amount\n\n` +
+                      `/deductinv USER_ID AMOUNT - Deduct investment amount\n` +
+                      `/viewproof INV_ID - View payment proof\n\n` +
                       `💳 **Withdrawal Management:**\n` +
                       `/withdrawals - List withdrawals\n` +
                       `/approve WDL_ID - Approve withdrawal\n` +
@@ -2345,6 +2573,7 @@ bot.onText(/\/viewchat (.+)/, async (msg, match) => {
     
     const isLoggedOut = chat.isLoggedOut || false;
     const noAccount = chat.noAccount || false;
+    const isAppeal = chat.isAppeal || false;
     const userName = chat.userName || 'Unknown User';
     const userId = chat.userId || 'Unknown ID';
     
@@ -2361,6 +2590,7 @@ bot.onText(/\/viewchat (.+)/, async (msg, match) => {
     message += `📊 Status: ${chat.status === 'active' ? '🟢 Active' : '🔴 Closed'}\n`;
     message += `🚪 Logged Out: ${isLoggedOut ? 'Yes' : 'No'}\n`;
     message += `🚫 No Account: ${noAccount ? 'Yes' : 'No'}\n`;
+    message += `⚖️ Appeal: ${isAppeal ? 'Yes ⚠️ URGENT' : 'No'}\n`;
     message += `📎 Media Files: ${mediaCount}\n`;
     message += `📅 Created: ${new Date(chat.createdAt).toLocaleString()}\n`;
     message += `🕒 Updated: ${new Date(chat.updatedAt).toLocaleString()}\n`;
@@ -2441,12 +2671,14 @@ bot.onText(/\/stats/, async (msg) => {
     const totalReferralEarnings = referrals.reduce((sum, ref) => sum + ref.bonusAmount, 0);
     const activeUsers = users.filter(u => !u.banned).length;
     const activeInvestments = investments.filter(i => i.status === 'active').length;
+    const pendingInvestments = investments.filter(i => i.status === 'pending').length;
     const pendingWithdrawals = withdrawals.filter(w => w.status === 'pending').length;
     const activeSupportChats = supportChats.filter(c => c.status === 'active').length;
     const paidReferrals = referrals.filter(ref => ref.status === 'paid').length;
     const totalWithdrawalFees = withdrawals.filter(w => w.status === 'approved').reduce((sum, w) => sum + (w.fee || 0), 0);
     const offlineUsers = users.filter(u => u.chatId && loggedOutUsers.has(u.chatId)).length;
     const blockedUsers = users.filter(u => u.botBlocked).length;
+    const suspendedUsers = users.filter(u => u.banned).length;
     
     // Media stats
     const photoCount = mediaFiles.filter(m => m.fileType === 'photo').length;
@@ -2458,14 +2690,14 @@ bot.onText(/\/stats/, async (msg) => {
                         `**Users:**\n` +
                         `• Total Users: ${users.length}\n` +
                         `• Active Users: ${activeUsers}\n` +
-                        `• Banned Users: ${users.length - activeUsers}\n` +
+                        `• Suspended Users: ${suspendedUsers}\n` +
                         `• Logged Out: ${offlineUsers}\n` +
                         `• Blocked Bot: ${blockedUsers}\n` +
                         `• Total Balance: ${formatCurrency(totalBalance)}\n\n` +
                         `**Investments:**\n` +
                         `• Total Investments: ${investments.length}\n` +
                         `• Active Investments: ${activeInvestments}\n` +
-                        `• Pending Investments: ${investments.filter(i => i.status === 'pending').length}\n` +
+                        `• Pending Investments: ${pendingInvestments}\n` +
                         `• Total Invested: ${formatCurrency(totalInvested)}\n` +
                         `• Total Earned: ${formatCurrency(totalEarned)}\n\n` +
                         `**Withdrawals:**\n` +
@@ -2868,12 +3100,13 @@ bot.onText(/\/supportchats/, async (msg) => {
     activeChats.forEach((chat, index) => {
       const isLoggedOut = chat.isLoggedOut ? '🚪' : '';
       const noAccount = chat.noAccount ? '🚫' : '';
+      const isAppeal = chat.isAppeal ? '⚖️' : '';
       const timeAgo = Math.floor((new Date() - new Date(chat.updatedAt)) / 60000);
       const messages = chat.messages ? chat.messages.length : 0;
       const lastMessage = chat.messages && chat.messages.length > 0 ? 
         chat.messages[chat.messages.length - 1].message.substring(0, 30) + '...' : 'No messages';
       
-      message += `${index + 1}. ${isLoggedOut}${noAccount} **${chat.userName}**\n`;
+      message += `${index + 1}. ${isLoggedOut}${noAccount}${isAppeal} **${chat.userName}**\n`;
       message += `   🆔 ${chat.id}\n`;
       message += `   📝 ${chat.topic}\n`;
       message += `   💬 ${messages} messages\n`;
@@ -3155,6 +3388,172 @@ bot.onText(/\/investments/, async (msg) => {
   } catch (error) {
     console.log('Error in /investments:', error.message);
     await bot.sendMessage(chatId, '❌ Error loading investments.');
+  }
+});
+
+// Approve investment
+bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const investmentId = match[1];
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const investments = await loadData(INVESTMENTS_FILE);
+    const investmentIndex = investments.findIndex(i => i.id === investmentId);
+    
+    if (investmentIndex === -1) {
+      await bot.sendMessage(chatId, `❌ Investment ${investmentId} not found.`);
+      return;
+    }
+    
+    const investment = investments[investmentIndex];
+    
+    if (investment.status !== 'pending') {
+      await bot.sendMessage(chatId, `⚠️ Investment ${investmentId} is not pending.`);
+      return;
+    }
+    
+    // Update investment status
+    investments[investmentIndex].status = 'active';
+    investments[investmentIndex].approvedAt = new Date().toISOString();
+    investments[investmentIndex].approvedBy = chatId.toString();
+    
+    // Update user's total invested and active investments count
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === investment.memberId);
+    
+    if (userIndex !== -1) {
+      users[userIndex].totalInvested = (parseFloat(users[userIndex].totalInvested) || 0) + investment.amount;
+      users[userIndex].activeInvestments = (users[userIndex].activeInvestments || 0) + 1;
+    }
+    
+    await saveData(INVESTMENTS_FILE, investments);
+    await saveData(USERS_FILE, users);
+    
+    await bot.sendMessage(chatId,
+      `✅ **Investment Approved**\n\n` +
+      `ID: ${investmentId}\n` +
+      `User: ${investment.memberId}\n` +
+      `Amount: ${formatCurrency(investment.amount)}\n` +
+      `Approved by: Admin\n\n` +
+      `The investment is now active and earning 2% daily.`
+    );
+    
+    // Notify user
+    await sendUserNotification(investment.memberId,
+      `✅ **Investment Approved!**\n\n` +
+      `Your investment has been approved and is now active!\n\n` +
+      `Amount: ${formatCurrency(investment.amount)}\n` +
+      `Investment ID: ${investmentId}\n` +
+      `Daily Profit: ${formatCurrency(calculateDailyProfit(investment.amount))}\n` +
+      `Duration: 30 days\n\n` +
+      `Your investment is now earning 2% daily profit!\n` +
+      `Check your earnings with /earnings`
+    );
+  } catch (error) {
+    console.log('Error in /approveinvestment:', error.message);
+    await bot.sendMessage(chatId, '❌ Error approving investment.');
+  }
+});
+
+// Reject investment
+bot.onText(/\/rejectinvestment (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const investmentId = match[1];
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const investments = await loadData(INVESTMENTS_FILE);
+    const investmentIndex = investments.findIndex(i => i.id === investmentId);
+    
+    if (investmentIndex === -1) {
+      await bot.sendMessage(chatId, `❌ Investment ${investmentId} not found.`);
+      return;
+    }
+    
+    const investment = investments[investmentIndex];
+    
+    if (investment.status !== 'pending') {
+      await bot.sendMessage(chatId, `⚠️ Investment ${investmentId} is not pending.`);
+      return;
+    }
+    
+    // Update investment status
+    investments[investmentIndex].status = 'rejected';
+    investments[investmentIndex].rejectedAt = new Date().toISOString();
+    investments[investmentIndex].rejectedBy = chatId.toString();
+    
+    await saveData(INVESTMENTS_FILE, investments);
+    
+    await bot.sendMessage(chatId,
+      `❌ **Investment Rejected**\n\n` +
+      `ID: ${investmentId}\n` +
+      `User: ${investment.memberId}\n` +
+      `Amount: ${formatCurrency(investment.amount)}\n` +
+      `Rejected by: Admin\n\n` +
+      `User has been notified.`
+    );
+    
+    // Notify user
+    await sendUserNotification(investment.memberId,
+      `❌ **Investment Rejected**\n\n` +
+      `Your investment request has been rejected.\n\n` +
+      `Amount: ${formatCurrency(investment.amount)}\n` +
+      `Investment ID: ${investmentId}\n\n` +
+      `Please contact support for more information.`
+    );
+  } catch (error) {
+    console.log('Error in /rejectinvestment:', error.message);
+    await bot.sendMessage(chatId, '❌ Error rejecting investment.');
+  }
+});
+
+// View payment proof
+bot.onText(/\/viewproof (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const investmentId = match[1];
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const investments = await loadData(INVESTMENTS_FILE);
+    const investment = investments.find(i => i.id === investmentId);
+    
+    if (!investment) {
+      await bot.sendMessage(chatId, `❌ Investment ${investmentId} not found.`);
+      return;
+    }
+    
+    const mediaFiles = await loadData(MEDIA_FILES_FILE);
+    const proof = mediaFiles.find(m => m.investmentId === investmentId);
+    
+    if (!proof) {
+      await bot.sendMessage(chatId, `❌ No proof found for investment ${investmentId}.`);
+      return;
+    }
+    
+    // Send the proof photo to admin
+    await bot.sendPhoto(chatId, proof.fileId, {
+      caption: `📎 Proof for Investment ${investmentId}\n` +
+              `User: ${investment.memberId}\n` +
+              `Amount: ${formatCurrency(investment.amount)}\n` +
+              `Date: ${new Date(investment.date).toLocaleString()}\n` +
+              `Status: ${investment.status}`
+    });
+  } catch (error) {
+    console.log('Error in /viewproof:', error.message);
+    await bot.sendMessage(chatId, '❌ Error viewing proof.');
   }
 });
 
@@ -3518,4 +3917,4 @@ process.on('SIGINT', () => {
   });
 });
 
-console.log('✅ Starlife Advert Bot is running! All commands fixed and working!');
+console.log('✅ Starlife Advert Bot is running! All issues fixed!');
