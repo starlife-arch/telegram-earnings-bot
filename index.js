@@ -191,7 +191,7 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
     `);
     
-        // Create support_chats table
+         // Create support_chats table (FIXED - removed duplicate created_at)
     await client.query(`
       CREATE TABLE IF NOT EXISTS support_chats (
         id SERIAL PRIMARY KEY,
@@ -5851,4 +5851,5 @@ process.on('SIGINT', () => {
 console.log('✅ Starlife Advert Bot is running with PostgreSQL!');
 console.log('✅ Data is now permanently stored in PostgreSQL database');
 console.log('✅ No more data loss after 24 hours!');
+
 
