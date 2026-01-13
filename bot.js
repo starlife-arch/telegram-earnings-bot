@@ -1,10 +1,8 @@
-// index.js - Starlife Advert Bot
-// COMPLETELY FIXED VERSION - NO HARDCODED SECRETS
-
+// ==================== IMPORTS AND CONFIGURATION ====================
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const crypto = require('crypto');
-const { MongoClient, ObjectId } = require('mongodb');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,8 +10,6 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 // ==================== ENVIRONMENT VARIABLES ====================
-// ALL SECRETS MUST COME FROM ENVIRONMENT VARIABLES
-
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -30,15 +26,29 @@ if (!MONGODB_URI) {
   process.exit(1);
 }
 
-console.log('✅ Environment variables loaded');
+// ==================== BOT INITIALIZATION ====================
+let bot;
+try {
+  bot = new TelegramBot(TELEGRAM_TOKEN, { 
+    polling: {
+      interval: 300,
+      autoStart: true,
+      params: {
+        timeout: 10
+      }
+    }
+  });
+  console.log('✅ Bot instance created');
+} catch (error) {
+  console.error('❌ Bot creation failed:', error.message);
+  process.exit(1);
+}
 
-// ==================== MONGODB CONFIGURATION ====================
-
+// ==================== DATABASE CONFIGURATION ====================
 const DB_NAME = 'starlife';
 let db;
 let client;
 
-// Collections
 const COLLECTIONS = {
   USERS: 'users',
   INVESTMENTS: 'investments',
@@ -51,24 +61,19 @@ const COLLECTIONS = {
   MEDIA_FILES: 'media_files'
 };
 
-// Initialize MongoDB connection
+// ==================== DATABASE FUNCTIONS ====================
 async function initMongoDB() {
   try {
     console.log('🔗 Connecting to MongoDB...');
-    client = new MongoClient(MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    client = new MongoClient(MONGODB_URI);
     
     await client.connect();
     db = client.db(DB_NAME);
     console.log('✅ Connected to MongoDB');
     
-    // Create indexes
     await createIndexes();
     console.log('✅ Indexes created');
     
-    // Initialize fake members if needed
     await initializeFakeMembers();
     
     return true;
@@ -78,54 +83,43 @@ async function initMongoDB() {
   }
 }
 
-// Create indexes for better performance
 async function createIndexes() {
   try {
-    // Users collection
     await db.collection(COLLECTIONS.USERS).createIndex({ memberId: 1 }, { unique: true });
     await db.collection(COLLECTIONS.USERS).createIndex({ chatId: 1 }, { unique: true, sparse: true });
     await db.collection(COLLECTIONS.USERS).createIndex({ email: 1 }, { unique: true, sparse: true });
     await db.collection(COLLECTIONS.USERS).createIndex({ referralCode: 1 }, { unique: true });
-    
-    // Investments collection
-    await db.collection(COLLECTIONS.INVESTMENTS).createIndex({ memberId: 1 });
-    await db.collection(COLLECTIONS.INVESTMENTS).createIndex({ status: 1 });
-    
-    // Withdrawals collection
-    await db.collection(COLLECTIONS.WITHDRAWALS).createIndex({ memberId: 1 });
-    await db.collection(COLLECTIONS.WITHDRAWALS).createIndex({ status: 1 });
-    
-    // Referrals collection
-    await db.collection(COLLECTIONS.REFERRALS).createIndex({ referrerId: 1 });
-    await db.collection(COLLECTIONS.REFERRALS).createIndex({ referredId: 1 });
-    
-    // Support chats collection
-    await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ userId: 1 });
-    await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ status: 1 });
-    
-    // Transactions collection
-    await db.collection(COLLECTIONS.TRANSACTIONS).createIndex({ memberId: 1 });
-    await db.collection(COLLECTIONS.TRANSACTIONS).createIndex({ date: -1 });
-    
-    // Earnings views collection
-    await db.collection(COLLECTIONS.EARNINGS_VIEWS).createIndex({ viewerId: 1 });
-    await db.collection(COLLECTIONS.EARNINGS_VIEWS).createIndex({ viewedId: 1 });
-    
-    // Media files collection
-    await db.collection(COLLECTIONS.MEDIA_FILES).createIndex({ chatId: 1 });
-    await db.collection(COLLECTIONS.MEDIA_FILES).createIndex({ investmentId: 1 });
   } catch (error) {
     console.error('Error creating indexes:', error.message);
   }
 }
 
-// Initialize fake members
 async function initializeFakeMembers() {
   try {
     const count = await db.collection(COLLECTIONS.FAKE_MEMBERS).countDocuments();
     
     if (count === 0) {
-      const fakeMembers = generateFakeMembers(50);
+      const fakeMembers = [];
+      const names = ['John', 'Emma', 'Michael', 'Sophia', 'James', 'Olivia', 'Robert', 'Ava', 'David', 'Isabella'];
+      
+      for (let i = 1; i <= 50; i++) {
+        const name = names[Math.floor(Math.random() * names.length)];
+        const investment = Math.floor(Math.random() * 500) + 50;
+        const profit = investment * 0.02 * 7;
+        const referrals = Math.floor(Math.random() * 5);
+        
+        fakeMembers.push({
+          id: `FAKE-${1000 + i}`,
+          name: `${name} ${String.fromCharCode(65 + Math.floor(Math.random() * 26))}.`,
+          investment: investment,
+          profit: profit.toFixed(2),
+          referrals: referrals,
+          joinDate: new Date(Date.now() - Math.floor(Math.random() * 30) * 24 * 60 * 60 * 1000).toISOString(),
+          isFake: true,
+          createdAt: new Date().toISOString()
+        });
+      }
+      
       await db.collection(COLLECTIONS.FAKE_MEMBERS).insertMany(fakeMembers);
       console.log('✅ Fake members initialized');
     }
@@ -133,8 +127,6 @@ async function initializeFakeMembers() {
     console.error('Error initializing fake members:', error.message);
   }
 }
-
-// ==================== DATABASE HELPER FUNCTIONS ====================
 
 async function loadData(collectionName, query = {}, sort = {}, limit = 0) {
   try {
@@ -178,13 +170,12 @@ async function insertData(collectionName, document) {
   }
 }
 
-async function updateMany(collectionName, filter, update) {
+async function findOne(collectionName, query) {
   try {
     const collection = db.collection(collectionName);
-    const result = await collection.updateMany(filter, update);
-    return result;
+    return await collection.findOne(query);
   } catch (error) {
-    console.error(`Error updating multiple in ${collectionName}:`, error.message);
+    console.error(`Error finding one in ${collectionName}:`, error.message);
     return null;
   }
 }
@@ -200,18 +191,7 @@ async function deleteData(collectionName, filter) {
   }
 }
 
-async function findOne(collectionName, query) {
-  try {
-    const collection = db.collection(collectionName);
-    return await collection.findOne(query);
-  } catch (error) {
-    console.error(`Error finding one in ${collectionName}:`, error.message);
-    return null;
-  }
-}
-
 // ==================== UTILITY FUNCTIONS ====================
-
 function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
@@ -251,37 +231,12 @@ function formatCurrency(amount) {
   return `$${parseFloat(amount).toFixed(2)}`;
 }
 
-function generateFakeMembers(count) {
-  const fakeMembers = [];
-  const names = ['John', 'Emma', 'Michael', 'Sophia', 'James', 'Olivia', 'Robert', 'Ava', 'David', 'Isabella'];
-  
-  for (let i = 1; i <= count; i++) {
-    const name = names[Math.floor(Math.random() * names.length)];
-    const investment = Math.floor(Math.random() * 500) + 50;
-    const profit = investment * 0.02 * 7;
-    const referrals = Math.floor(Math.random() * 5);
-    
-    fakeMembers.push({
-      id: `FAKE-${1000 + i}`,
-      name: `${name} ${String.fromCharCode(65 + Math.floor(Math.random() * 26))}.`,
-      investment: investment,
-      profit: profit.toFixed(2),
-      referrals: referrals,
-      joinDate: new Date(Date.now() - Math.floor(Math.random() * 30) * 24 * 60 * 60 * 1000).toISOString(),
-      isFake: true,
-      createdAt: new Date().toISOString()
-    });
-  }
-  
-  return fakeMembers;
-}
-
-// ==================== USER MANAGEMENT FUNCTIONS ====================
-
-const loggedOutUsers = new Set();
+// ==================== USER SESSIONS ====================
 const userSessions = {};
+const loggedOutUsers = new Set();
 const adminSessions = {};
 
+// ==================== USER MANAGEMENT FUNCTIONS ====================
 async function isUserLoggedIn(chatId) {
   if (loggedOutUsers.has(chatId.toString())) {
     return false;
@@ -289,19 +244,6 @@ async function isUserLoggedIn(chatId) {
   
   const user = await findOne(COLLECTIONS.USERS, { chatId: chatId.toString() });
   return !!user;
-}
-
-async function canUserAccessAccount(chatId) {
-  if (!await isUserLoggedIn(chatId)) {
-    return false;
-  }
-  
-  const user = await findOne(COLLECTIONS.USERS, { chatId: chatId.toString() });
-  
-  if (!user) return false;
-  if (user.banned) return false;
-  
-  return true;
 }
 
 async function getLoggedInUser(chatId) {
@@ -330,20 +272,6 @@ async function getUserByEmail(email) {
   return await findOne(COLLECTIONS.USERS, { email: email.toLowerCase() });
 }
 
-async function isChatIdBoundToDifferentUser(chatId, requestedMemberId) {
-  const userByChatId = await getUserByChatId(chatId);
-  
-  if (!userByChatId) return false;
-  return userByChatId.memberId !== requestedMemberId;
-}
-
-async function isMemberIdBoundToDifferentChat(memberId, chatId) {
-  const userByMemberId = await getUserByMemberId(memberId);
-  
-  if (!userByMemberId || !userByMemberId.chatId) return false;
-  return userByMemberId.chatId !== chatId.toString();
-}
-
 async function getActiveSupportChat(userId) {
   return await findOne(COLLECTIONS.SUPPORT_CHATS, { 
     userId: userId,
@@ -355,42 +283,15 @@ async function sendUserNotification(memberId, message) {
   try {
     const user = await getUserByMemberId(memberId);
     
-    if (!user) {
-      console.log(`User ${memberId} not found`);
+    if (!user || !user.chatId) {
       return false;
     }
-    
-    if (!user.chatId) {
-      console.log(`User ${memberId} has no chatId`);
-      return false;
-    }
-    
-    const isLoggedOut = loggedOutUsers.has(user.chatId);
     
     try {
       await bot.sendMessage(user.chatId, message);
-      
-      if (isLoggedOut) {
-        await saveData(COLLECTIONS.USERS, 
-          { memberId: memberId },
-          { $set: { lastNotification: new Date().toISOString() } }
-        );
-        console.log(`Message sent to logged out user ${memberId}`);
-      }
-      
       return true;
     } catch (error) {
       console.log(`Could not send message to ${memberId}:`, error.message);
-      
-      if (error.response && error.response.statusCode === 403) {
-        console.log(`User ${memberId} has blocked the bot`);
-        
-        await saveData(COLLECTIONS.USERS,
-          { memberId: memberId },
-          { $set: { botBlocked: true } }
-        );
-      }
-      
       return false;
     }
   } catch (error) {
@@ -429,47 +330,7 @@ async function storeOfflineMessage(memberId, message, type = 'admin_message') {
   }
 }
 
-async function storeMediaFile(mediaData) {
-  try {
-    mediaData.createdAt = new Date().toISOString();
-    const result = await insertData(COLLECTIONS.MEDIA_FILES, mediaData);
-    return result ? true : false;
-  } catch (error) {
-    console.error('Error storing media:', error.message);
-    return false;
-  }
-}
-
-async function getMediaFile(mediaId) {
-  try {
-    return await findOne(COLLECTIONS.MEDIA_FILES, { id: mediaId });
-  } catch (error) {
-    console.error('Error getting media:', error.message);
-    return null;
-  }
-}
-
-// ==================== TELEGRAM BOT INITIALIZATION ====================
-
-let bot;
-try {
-  bot = new TelegramBot(TELEGRAM_TOKEN, { 
-    polling: {
-      interval: 300,
-      autoStart: true,
-      params: {
-        timeout: 10
-      }
-    }
-  });
-  console.log('✅ Bot instance created');
-} catch (error) {
-  console.error('❌ Bot creation failed:', error.message);
-  process.exit(1);
-}
-
 // ==================== DAILY PROFIT SCHEDULER ====================
-
 function scheduleDailyProfits() {
   setInterval(async () => {
     try {
@@ -515,253 +376,9 @@ function scheduleDailyProfits() {
   }, 24 * 60 * 60 * 1000);
 }
 
-// ==================== MEDIA HANDLERS ====================
+// ==================== BOT COMMAND HANDLERS ====================
 
-async function handleSupportMedia(chatId, fileId, fileType, caption = '', session) {
-  try {
-    const supportChat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: session.data.chatId });
-    
-    if (!supportChat) {
-      await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
-      delete userSessions[chatId];
-      return;
-    }
-    
-    const mediaId = `MEDIA-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
-    
-    await storeMediaFile({
-      id: mediaId,
-      fileId: fileId,
-      fileType: fileType,
-      caption: caption,
-      chatId: session.data.chatId,
-      sender: session.data.memberId ? 'user' : 'anonymous',
-      senderId: session.data.memberId || `chat_${chatId}`,
-      timestamp: new Date().toISOString()
-    });
-    
-    await saveData(COLLECTIONS.SUPPORT_CHATS,
-      { id: session.data.chatId },
-      { 
-        $push: { 
-          messages: {
-            sender: session.data.memberId ? 'user' : 'anonymous',
-            message: caption || `[${fileType.toUpperCase()} sent]`,
-            mediaId: mediaId,
-            fileType: fileType,
-            timestamp: new Date().toISOString()
-          }
-        },
-        $set: {
-          updatedAt: new Date().toISOString(),
-          adminReplied: false
-        }
-      }
-    );
-    
-    await bot.sendMessage(chatId,
-      `✅ **${fileType.charAt(0).toUpperCase() + fileType.slice(1)} sent to support!**\n\n` +
-      `Your file has been received.\n` +
-      `Support team will review it shortly.\n\n` +
-      `Continue typing or send more files.`
-    );
-    
-    const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
-    if (adminIds.length > 0) {
-      const userName = supportChat.userName || 'Unknown User';
-      const userId = supportChat.userId || 'Anonymous';
-      
-      const adminMessage = `📎 **New Media in Support Chat**\n\n` +
-                          `Chat ID: ${session.data.chatId}\n` +
-                          `User: ${userName} (${userId})\n` +
-                          `File Type: ${fileType.toUpperCase()}\n` +
-                          `Caption: ${caption || 'No caption'}\n\n` +
-                          `**Reply:** /replychat ${session.data.chatId} your_message\n` +
-                          `**View Chat:** /viewchat ${session.data.chatId}`;
-      
-      for (const adminId of adminIds) {
-        try {
-          await bot.sendMessage(adminId, adminMessage);
-        } catch (error) {
-          console.log('Could not notify admin:', adminId);
-        }
-      }
-    }
-  } catch (error) {
-    console.log('Error handling media:', error.message);
-    await bot.sendMessage(chatId, '❌ Error sending file. Please try again.');
-  }
-}
-
-bot.on('photo', async (msg) => {
-  const chatId = msg.chat.id;
-  const session = userSessions[chatId];
-  
-  if (session && session.step === 'awaiting_investment_proof') {
-    try {
-      const photo = msg.photo[msg.photo.length - 1];
-      const fileId = photo.file_id;
-      const caption = msg.caption || '';
-      
-      const investmentId = `INV-${Date.now()}`;
-      
-      const investment = {
-        id: investmentId,
-        memberId: session.data.memberId,
-        amount: session.data.amount,
-        paymentMethod: session.data.paymentMethod,
-        transactionHash: session.data.transactionHash || '',
-        status: 'pending',
-        date: new Date().toISOString(),
-        daysActive: 0,
-        totalProfit: 0,
-        proofMediaId: `MEDIA-${Date.now()}`,
-        proofCaption: caption || `Payment proof for $${session.data.amount}`
-      };
-      
-      await insertData(COLLECTIONS.INVESTMENTS, investment);
-      
-      await storeMediaFile({
-        id: `MEDIA-${Date.now()}`,
-        fileId: fileId,
-        fileType: 'photo',
-        caption: `Payment proof for ${formatCurrency(session.data.amount)} (Method: ${session.data.paymentMethod})`,
-        investmentId: investmentId,
-        sender: session.data.memberId,
-        timestamp: new Date().toISOString()
-      });
-      
-      delete userSessions[chatId];
-      
-      await bot.sendMessage(chatId,
-        `✅ **Payment Proof Received!**\n\n` +
-        `Amount: ${formatCurrency(session.data.amount)}\n` +
-        `Payment Method: ${session.data.paymentMethod}\n` +
-        `Investment ID: ${investmentId}\n\n` +
-        `Your investment is pending approval.\n` +
-        `Our team will review your payment proof and activate your investment within 15 minutes.\n\n` +
-        `You will be notified once it's approved.`
-      );
-      
-      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
-      if (adminIds.length > 0) {
-        const user = await getUserByMemberId(session.data.memberId);
-        
-        const adminMessage = `📈 **New Investment Request**\n\n` +
-                            `Investment ID: ${investmentId}\n` +
-                            `User: ${user.name} (${session.data.memberId})\n` +
-                            `Amount: ${formatCurrency(session.data.amount)}\n` +
-                            `Payment Method: ${session.data.paymentMethod}\n` +
-                            `Transaction Hash: ${session.data.transactionHash || 'N/A'}\n` +
-                            `Date: ${new Date().toLocaleString()}\n\n` +
-                            `**Approve:** /approveinvestment ${investmentId}\n` +
-                            `**Reject:** /rejectinvestment ${investmentId}\n\n` +
-                            `**View Proof:** /viewproof ${investmentId}`;
-        
-        for (const adminId of adminIds) {
-          try {
-            await bot.sendMessage(adminId, adminMessage);
-          } catch (error) {
-            console.log('Could not notify admin:', adminId);
-          }
-        }
-      }
-      
-      return;
-    } catch (error) {
-      console.log('Error handling investment photo:', error.message);
-      await bot.sendMessage(chatId, '❌ Error sending payment proof. Please try again.');
-    }
-  }
-  
-  if (!session || !(session.step === 'support_chat' || 
-                    session.step === 'support_loggedout_chat' || 
-                    session.step === 'universal_support_chat' ||
-                    session.step === 'appeal_chat')) {
-    return;
-  }
-  
-  try {
-    const photo = msg.photo[msg.photo.length - 1];
-    const fileId = photo.file_id;
-    const caption = msg.caption || '';
-    
-    await handleSupportMedia(chatId, fileId, 'photo', caption, session);
-  } catch (error) {
-    console.log('Error handling photo:', error.message);
-    await bot.sendMessage(chatId, '❌ Error sending photo. Please try again.');
-  }
-});
-
-bot.on('document', async (msg) => {
-  const chatId = msg.chat.id;
-  const session = userSessions[chatId];
-  
-  if (!session || !(session.step === 'support_chat' || 
-                    session.step === 'support_loggedout_chat' || 
-                    session.step === 'universal_support_chat' ||
-                    session.step === 'appeal_chat')) {
-    return;
-  }
-  
-  try {
-    const fileId = msg.document.file_id;
-    const caption = msg.caption || '';
-    const fileName = msg.document.file_name || 'document';
-    
-    await handleSupportMedia(chatId, fileId, 'document', `${fileName}\n${caption}`, session);
-  } catch (error) {
-    console.log('Error handling document:', error.message);
-    await bot.sendMessage(chatId, '❌ Error sending document. Please try again.');
-  }
-});
-
-bot.on('video', async (msg) => {
-  const chatId = msg.chat.id;
-  const session = userSessions[chatId];
-  
-  if (!session || !(session.step === 'support_chat' || 
-                    session.step === 'support_loggedout_chat' || 
-                    session.step === 'universal_support_chat' ||
-                    session.step === 'appeal_chat')) {
-    return;
-  }
-  
-  try {
-    const fileId = msg.video.file_id;
-    const caption = msg.caption || '';
-    
-    await handleSupportMedia(chatId, fileId, 'video', caption, session);
-  } catch (error) {
-    console.log('Error handling video:', error.message);
-    await bot.sendMessage(chatId, '❌ Error sending video. Please try again.');
-  }
-});
-
-bot.on('voice', async (msg) => {
-  const chatId = msg.chat.id;
-  const session = userSessions[chatId];
-  
-  if (!session || !(session.step === 'support_chat' || 
-                    session.step === 'support_loggedout_chat' || 
-                    session.step === 'universal_support_chat' ||
-                    session.step === 'appeal_chat')) {
-    return;
-  }
-  
-  try {
-    const fileId = msg.voice.file_id;
-    
-    await handleSupportMedia(chatId, fileId, 'voice', 'Voice message', session);
-  } catch (error) {
-    console.log('Error handling voice:', error.message);
-    await bot.sendMessage(chatId, '❌ Error sending voice message. Please try again.');
-  }
-});
-
-// ==================== BOT COMMANDS ====================
-
-// Start command
+// /start command
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -815,6 +432,7 @@ bot.onText(/\/start/, async (msg) => {
     }
   }
   
+  // Not logged in - show public welcome
   const fakeMembers = await loadData(COLLECTIONS.FAKE_MEMBERS, {}, {}, 3);
   
   let fakeMessage = '🌟 **Recent Success Stories:**\n\n';
@@ -835,61 +453,7 @@ bot.onText(/\/start/, async (msg) => {
   await bot.sendMessage(chatId, fakeMessage);
 });
 
-// Help command
-bot.onText(/\/help/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  const isLoggedIn = await isUserLoggedIn(chatId);
-  const user = isLoggedIn ? await getLoggedInUser(chatId) : null;
-  
-  let helpMessage = `🆘 **Starlife Advert Help Center**\n\n`;
-  
-  if (isLoggedIn && user) {
-    helpMessage += `👋 Welcome ${user.name}!\n\n`;
-    helpMessage += `**📊 Account Commands:**\n`;
-    helpMessage += `/profile - View your account details\n`;
-    helpMessage += `/earnings - View your earnings\n`;
-    helpMessage += `/transactions - View transaction history\n`;
-    helpMessage += `/referral - View referral program (FIRST investment only)\n`;
-    helpMessage += `/logout - Logout from account\n\n`;
-    
-    helpMessage += `**💰 Financial Commands:**\n`;
-    helpMessage += `/invest - Make new investment\n`;
-    helpMessage += `/withdraw - Withdraw funds\n`;
-    helpMessage += `/viewearnings USER-ID - View others earnings ($1 fee)\n\n`;
-    
-    helpMessage += `**🆘 Support Commands:**\n`;
-    helpMessage += `/support - Contact support team\n`;
-    helpMessage += `/appeal - Submit appeal (if suspended)\n`;
-    helpMessage += `/inbox - View offline messages\n\n`;
-    
-    helpMessage += `**🔐 Account Security:**\n`;
-    helpMessage += `/forgotpassword - Reset your password\n\n`;
-    
-    helpMessage += `**💡 Quick Start:**\n`;
-    helpMessage += `/investnow - Quick investment guide`;
-  } else {
-    helpMessage += `**Welcome! Here are available commands:**\n\n`;
-    helpMessage += `**👤 Account Commands:**\n`;
-    helpMessage += `/register - Create new account\n`;
-    helpMessage += `/login - Login to existing account\n`;
-    helpMessage += `/forgotpassword - Reset your password\n\n`;
-    
-    helpMessage += `**💡 Information Commands:**\n`;
-    helpMessage += `/investnow - Quick start guide\n`;
-    helpMessage += `/support - Contact support\n\n`;
-    
-    helpMessage += `**📊 After Registration:**\n`;
-    helpMessage += `• Use /invest to start earning\n`;
-    helpMessage += `• Earn 2% daily profit (LIFETIME)\n`;
-    helpMessage += `• Get 10% from referrals (FIRST investment only)\n`;
-    helpMessage += `• Fast withdrawals (10-15 min)`;
-  }
-  
-  await bot.sendMessage(chatId, helpMessage);
-});
-
-// Register command
+// /register command
 bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
   const chatId = msg.chat.id;
   const referralCode = match[1] ? match[1].trim().toUpperCase() : null;
@@ -902,9 +466,7 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
       `This Telegram account is already linked to:\n` +
       `Member ID: ${existingUser.memberId}\n` +
       `Name: ${existingUser.name}\n\n` +
-      `You cannot register multiple accounts with the same Telegram account.\n` +
-      `Use /login to access your existing account.\n\n` +
-      `If you believe this is an error, contact support with /support`
+      `Use /login to access your existing account.`
     );
     return;
   }
@@ -935,10 +497,6 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
       registrationMessage += `Starting registration without referral...\n\n`;
       userSessions[chatId].data.referralCode = null;
     }
-  } else {
-    registrationMessage += `💡 **No Referral Code?**\n`;
-    registrationMessage += `If you have a referral code, type /register CODE\n`;
-    registrationMessage += `Example: /register REF-ABC123\n\n`;
   }
   
   registrationMessage += `Step 1/4: Enter your full name\n\n` +
@@ -948,7 +506,7 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
   await bot.sendMessage(chatId, registrationMessage);
 });
 
-// Login command
+// /login command
 bot.onText(/\/login/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -973,37 +531,7 @@ bot.onText(/\/login/, async (msg) => {
   );
 });
 
-// Forgot Password command
-bot.onText(/\/forgotpassword/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  const isLoggedIn = await isUserLoggedIn(chatId);
-  if (isLoggedIn) {
-    await bot.sendMessage(chatId, '✅ You are already logged in. Use /profile to see your account details.');
-    return;
-  }
-  
-  userSessions[chatId] = {
-    step: 'forgot_password_method',
-    data: {}
-  };
-  
-  await bot.sendMessage(chatId,
-    `🔐 **Password Recovery**\n\n` +
-    `Select how you want to recover your password:\n\n` +
-    `1️⃣ **By Member ID**\n` +
-    `   - Enter your Member ID\n` +
-    `   - We'll send new password to your registered chat\n\n` +
-    `2️⃣ **By Email**\n` +
-    `   - Enter your registered email\n` +
-    `   - We'll send new password to your registered chat\n\n` +
-    `3️⃣ **Contact Support**\n` +
-    `   - If you don't remember either\n\n` +
-    `Reply with number (1-3):`
-  );
-});
-
-// Invest command
+// /invest command
 bot.onText(/\/invest/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -1042,7 +570,7 @@ bot.onText(/\/invest/, async (msg) => {
   );
 });
 
-// Withdraw command
+// /withdraw command
 bot.onText(/\/withdraw/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -1079,7 +607,7 @@ bot.onText(/\/withdraw/, async (msg) => {
   );
 });
 
-// Profile command
+// /profile command
 bot.onText(/\/profile/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -1107,16 +635,74 @@ bot.onText(/\/profile/, async (msg) => {
   message += `Total Referrals: ${user.referrals || 0}\n`;
   message += `Successful Referrals: ${successfulReferrals.length}\n`;
   message += `Your Code: ${user.referralCode}\n\n`;
-  message += `**Account Security**\n`;
-  message += `/changepassword - Change password\n`;
-  message += `/forgotpassword - Reset password\n\n`;
   message += `**Share your code:** ${user.referralCode}\n`;
   message += `Tell friends to use: /register ${user.referralCode}`;
   
   await bot.sendMessage(chatId, message);
 });
 
-// Support command
+// /earnings command
+bot.onText(/\/earnings/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  const investments = await loadData(COLLECTIONS.INVESTMENTS, { 
+    memberId: user.memberId,
+    status: 'active'
+  });
+  
+  let message = `📈 **Your Earnings**\n\n`;
+  message += `💰 Balance: ${formatCurrency(user.balance || 0)}\n`;
+  message += `📊 Total Earned: ${formatCurrency(user.totalEarned || 0)}\n`;
+  message += `💵 Total Invested: ${formatCurrency(user.totalInvested || 0)}\n`;
+  message += `👥 Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n`;
+  
+  if (investments.length > 0) {
+    message += `**Active Investments:**\n`;
+    investments.forEach(inv => {
+      const dailyProfit = calculateDailyProfit(inv.amount);
+      message += `• ${formatCurrency(inv.amount)} - Daily: ${formatCurrency(dailyProfit)}\n`;
+    });
+  } else {
+    message += `No active investments.\n`;
+    message += `Use /invest to start earning!\n`;
+  }
+  
+  await bot.sendMessage(chatId, message);
+});
+
+// /logout command
+bot.onText(/\/logout/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ You are not logged in.');
+    return;
+  }
+  
+  loggedOutUsers.add(chatId.toString());
+  
+  if (userSessions[chatId]) {
+    delete userSessions[chatId];
+  }
+  
+  await bot.sendMessage(chatId,
+    `✅ **Logged Out Successfully**\n\n` +
+    `You have been logged out from ${user.name} (${user.memberId}).\n\n` +
+    `To login again, use:\n` +
+    `/login - If you remember your credentials\n` +
+    `/forgotpassword - If you forgot password\n` +
+    `/support - If you need help logging in`
+  );
+});
+
+// /support command
 bot.onText(/\/support/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -1159,7 +745,6 @@ bot.onText(/\/support/, async (msg) => {
         `• Documents (PDFs, etc.)\n` +
         `• Videos\n` +
         `• Voice messages\n\n` +
-        `Last message from support: "${activeChat.messages.slice(-1)[0]?.message || 'No messages yet'}"\n\n` +
         `Type /endsupport to end this chat`;
       
       await bot.sendMessage(chatId, welcomeMessage);
@@ -1223,14 +808,134 @@ bot.onText(/\/support/, async (msg) => {
       `5️⃣ **Send Payment Proof**\n` +
       `   - Upload M-Pesa screenshot\n` +
       `   - Payment confirmation\n\n` +
-      `**Reply with number (1-5):**\n\n` +
-      `**Note:** You can send photos, documents, videos, or voice messages!`
+      `**Reply with number (1-5):**`
     );
   }
 });
 
-// ==================== MESSAGE HANDLER ====================
+// /endsupport command
+bot.onText(/\/endsupport/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const session = userSessions[chatId];
+  if (session && (session.step === 'support_chat' || session.step === 'support_loggedout_chat' || session.step === 'universal_support_chat' || session.step === 'appeal_chat')) {
+    await saveData(COLLECTIONS.SUPPORT_CHATS,
+      { id: session.data.chatId },
+      { 
+        $set: { 
+          status: 'closed',
+          updatedAt: new Date().toISOString(),
+          closedBy: 'user'
+        }
+      }
+    );
+    
+    delete userSessions[chatId];
+    
+    await bot.sendMessage(chatId,
+      `✅ **Support Chat Ended**\n\n` +
+      `Thank you for contacting support.\n` +
+      `Use /support if you need help again.`
+    );
+  } else {
+    await bot.sendMessage(chatId, '❌ No active support chat to end.');
+  }
+});
 
+// /admin command
+bot.onText(/\/admin/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  const adminMessage = `⚡ **ADMIN PANEL**\n\n` +
+                      `📊 **Dashboard:**\n` +
+                      `/stats - System statistics\n` +
+                      `/admin - Show this menu\n\n` +
+                      `👥 **User Management:**\n` +
+                      `/users - List all users\n` +
+                      `/view USER_ID - View user details\n` +
+                      `/suspend USER_ID - Suspend user\n` +
+                      `/unsuspend USER_ID - Unsuspend user\n` +
+                      `/resetpass USER_ID - Reset password\n` +
+                      `/delete USER_ID - Delete user\n\n` +
+                      `💰 **Financial Management:**\n` +
+                      `/addbalance USER_ID AMOUNT - Add balance\n` +
+                      `/deductbalance USER_ID AMOUNT - Deduct balance\n\n` +
+                      `📈 **Investment Management:**\n` +
+                      `/investments - List all investments\n` +
+                      `/approveinvestment INV_ID - Approve investment\n` +
+                      `/rejectinvestment INV_ID - Reject investment\n\n` +
+                      `💳 **Withdrawal Management:**\n` +
+                      `/withdrawals - List withdrawals\n` +
+                      `/approve WDL_ID - Approve withdrawal\n` +
+                      `/reject WDL_ID - Reject withdrawal\n\n` +
+                      `🆘 **Support Management:**\n` +
+                      `/supportchats - View active chats\n` +
+                      `/viewchat CHAT_ID - View specific chat\n` +
+                      `/replychat CHAT_ID MESSAGE - Reply to chat\n` +
+                      `/closechat CHAT_ID - Close chat\n\n` +
+                      `📢 **Broadcast:**\n` +
+                      `/broadcast MESSAGE - Send to all users`;
+  
+  await bot.sendMessage(chatId, adminMessage);
+});
+
+// /stats command
+bot.onText(/\/stats/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(COLLECTIONS.USERS);
+    const investments = await loadData(COLLECTIONS.INVESTMENTS);
+    const withdrawals = await loadData(COLLECTIONS.WITHDRAWALS);
+    const supportChats = await loadData(COLLECTIONS.SUPPORT_CHATS);
+    
+    const totalBalance = users.reduce((sum, user) => sum + parseFloat(user.balance || 0), 0);
+    const totalInvested = users.reduce((sum, user) => sum + parseFloat(user.totalInvested || 0), 0);
+    const totalEarned = users.reduce((sum, user) => sum + parseFloat(user.totalEarned || 0), 0);
+    const activeUsers = users.filter(u => !u.banned).length;
+    const activeInvestments = investments.filter(i => i.status === 'active').length;
+    const pendingInvestments = investments.filter(i => i.status === 'pending').length;
+    const pendingWithdrawals = withdrawals.filter(w => w.status === 'pending').length;
+    const activeSupportChats = supportChats.filter(c => c.status === 'active').length;
+    const suspendedUsers = users.filter(u => u.banned).length;
+    
+    const statsMessage = `📊 **System Statistics**\n\n` +
+                        `**Users:**\n` +
+                        `• Total Users: ${users.length}\n` +
+                        `• Active Users: ${activeUsers}\n` +
+                        `• Suspended Users: ${suspendedUsers}\n` +
+                        `• Total Balance: ${formatCurrency(totalBalance)}\n\n` +
+                        `**Investments:**\n` +
+                        `• Total Investments: ${investments.length}\n` +
+                        `• Active Investments: ${activeInvestments}\n` +
+                        `• Pending Investments: ${pendingInvestments}\n` +
+                        `• Total Invested: ${formatCurrency(totalInvested)}\n` +
+                        `• Total Earned: ${formatCurrency(totalEarned)}\n\n` +
+                        `**Withdrawals:**\n` +
+                        `• Total Withdrawals: ${withdrawals.length}\n` +
+                        `• Pending Withdrawals: ${pendingWithdrawals}\n\n` +
+                        `**Support:**\n` +
+                        `• Active Chats: ${activeSupportChats}\n` +
+                        `• Total Chats: ${supportChats.length}`;
+    
+    await bot.sendMessage(chatId, statsMessage);
+  } catch (error) {
+    console.log('Error in /stats:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading statistics.');
+  }
+});
+
+// ==================== MESSAGE HANDLER ====================
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -1377,13 +1082,6 @@ bot.on('message', async (msg) => {
             bonusPaid: false,
             createdAt: new Date().toISOString()
           });
-          
-          await sendUserNotification(referrer.memberId,
-            `🎉 **New Referral!**\n\n` +
-            `${session.data.name} registered using your referral code!\n` +
-            `You will earn 10% when they make their FIRST investment.\n\n` +
-            `Total Referrals: ${(referrer.referrals || 0) + 1}`
-          );
         }
       }
       
@@ -1403,8 +1101,7 @@ bot.on('message', async (msg) => {
       }
       
       welcomeMessage += `\n**IMPORTANT SECURITY:**\n` +
-                       `This Telegram account is now PERMANENTLY linked to Member ID: ${memberId}\n` +
-                       `You cannot login to any other account with this Telegram account.\n\n` +
+                       `This Telegram account is now linked to Member ID: ${memberId}\n\n` +
                        `**Save your Member ID and Password!**\n` +
                        `You'll need them if you ever switch Telegram accounts.\n\n` +
                        `**To Start Earning:**\n` +
@@ -1412,17 +1109,6 @@ bot.on('message', async (msg) => {
                        `2. Minimum investment: $10\n` +
                        `3. Earn 2% daily profit (LIFETIME)\n` +
                        `4. Share your referral code to earn 10% on FIRST investments!\n\n` +
-                       `**Account Security:**\n` +
-                       `/changepassword - Change password anytime\n` +
-                       `/forgotpassword - Reset if forgotten\n\n` +
-                       `**Quick Commands:**\n` +
-                       `/invest - Make investment\n` +
-                       `/earnings - View YOUR earnings\n` +
-                       `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
-                       `/transactions - View transaction history\n` +
-                       `/referral - Share & earn 10% (FIRST investment only)\n` +
-                       `/profile - Account details\n` +
-                       `/support - Contact support\n\n` +
                        `✅ You are now logged in!`;
       
       await bot.sendMessage(chatId, welcomeMessage);
@@ -1454,35 +1140,6 @@ bot.on('message', async (msg) => {
         return;
       }
       
-      const isBoundToDifferentUser = await isChatIdBoundToDifferentUser(chatId, memberId);
-      if (isBoundToDifferentUser) {
-        const existingUser = await getUserByChatId(chatId);
-        await bot.sendMessage(chatId,
-          `🚫 **Account Binding Error**\n\n` +
-          `This Telegram account is already PERMANENTLY linked to:\n` +
-          `Member ID: ${existingUser.memberId}\n` +
-          `Name: ${existingUser.name}\n\n` +
-          `You cannot login to a different account with this Telegram account.\n` +
-          `If you need to access ${memberId}, you must use the Telegram account that was used during registration.\n\n` +
-          `Use /support if you need help.`
-        );
-        delete userSessions[chatId];
-        return;
-      }
-      
-      const isBoundToDifferentChat = await isMemberIdBoundToDifferentChat(memberId, chatId);
-      if (isBoundToDifferentChat && user.chatId) {
-        await bot.sendMessage(chatId,
-          `🚫 **Account Already Bound**\n\n` +
-          `Member ID ${memberId} is already PERMANENTLY linked to a different Telegram account.\n\n` +
-          `You must use the original Telegram account that was used during registration.\n` +
-          `If you no longer have access to that Telegram account, contact support with /support\n\n` +
-          `This is a security measure to protect your account.`
-        );
-        delete userSessions[chatId];
-        return;
-      }
-      
       session.data.memberId = memberId;
       session.step = 'login_password';
       
@@ -1495,20 +1152,6 @@ bot.on('message', async (msg) => {
       if (!user || user.passwordHash !== hashPassword(password)) {
         await bot.sendMessage(chatId, '❌ Invalid password. Try again:');
         session.step = 'login_password';
-        return;
-      }
-      
-      const isBoundToDifferentUser = await isChatIdBoundToDifferentUser(chatId, session.data.memberId);
-      if (isBoundToDifferentUser) {
-        const existingUser = await getUserByChatId(chatId);
-        await bot.sendMessage(chatId,
-          `🚫 **Security Violation**\n\n` +
-          `Login blocked! This Telegram account is bound to a different member ID.\n` +
-          `Bound to: ${existingUser.memberId}\n` +
-          `Trying to access: ${session.data.memberId}\n\n` +
-          `Contact support if you believe this is an error.`
-        );
-        delete userSessions[chatId];
         return;
       }
       
@@ -1554,18 +1197,575 @@ bot.on('message', async (msg) => {
                         `/earnings - View YOUR earnings\n` +
                         `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
                         `/withdraw - Withdraw funds\n` +
-                        `/transactions - View transaction history\n` +
-                        `/referral - Share & earn 10% (FIRST investment only)\n` +
                         `/profile - Account details\n` +
-                        `/changepassword - Change password\n` +
                         `/support - Contact support\n` +
                         `/logout - Logout`;
       
       await bot.sendMessage(chatId, welcomeMessage);
     }
     
-    // Add other message handlers here (forgot password, invest, withdraw, support, etc.)
-    // Due to character limits, I've included the most critical parts
+    // Investment flow
+    else if (session.step === 'awaiting_investment_amount') {
+      const amount = parseFloat(text);
+      
+      if (isNaN(amount) || amount < 10 || amount > 800000) {
+        await bot.sendMessage(chatId,
+          `❌ Invalid amount.\n` +
+          `Minimum: $10\n` +
+          `Maximum: $800,000\n\n` +
+          `Please enter a valid amount:`
+        );
+        return;
+      }
+      
+      session.data.amount = amount;
+      session.step = 'awaiting_investment_payment_method';
+      
+      await bot.sendMessage(chatId,
+        `✅ Amount: ${formatCurrency(amount)}\n\n` +
+        `**Select Payment Method:**\n\n` +
+        `1️⃣ **M-Pesa**\n` +
+        `   Till: 6034186\n` +
+        `   Name: Starlife Advert US Agency\n\n` +
+        `2️⃣ **USDT Tether (BEP20) - RECOMMENDED**\n` +
+        `   Wallet: 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
+        `   📌 Send only USDT (BEP20)\n\n` +
+        `3️⃣ **USDT TRON (TRC20)**\n` +
+        `   Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
+        `   📌 Send only USDT (TRC20)\n\n` +
+        `4️⃣ **PayPal**\n` +
+        `   Email: dave@starlifeadvert.com\n\n` +
+        `Reply with number (1-4):`
+      );
+    }
+    else if (session.step === 'awaiting_investment_payment_method') {
+      const methodNumber = parseInt(text);
+      const methods = ['M-Pesa', 'USDT Tether (BEP20)', 'USDT TRON (TRC20)', 'PayPal'];
+      
+      if (isNaN(methodNumber) || methodNumber < 1 || methodNumber > 4) {
+        await bot.sendMessage(chatId, '❌ Please enter a number between 1-4:');
+        return;
+      }
+      
+      const method = methods[methodNumber - 1];
+      session.data.paymentMethod = method;
+      session.step = 'awaiting_investment_proof';
+      
+      let paymentDetails = '';
+      
+      if (method === 'M-Pesa') {
+        paymentDetails = `**M-Pesa Details:**\n` +
+                        `Till: 6034186\n` +
+                        `Name: Starlife Advert US Agency\n\n` +
+                        `Please send payment and then send a screenshot of your payment proof.`;
+      } else if (method === 'USDT Tether (BEP20)') {
+        paymentDetails = `**USDT Tether (BEP20) Details:**\n` +
+                        `Wallet: 0xa95bd74fae59521e8405e14b54b0d07795643812\n\n` +
+                        `📌 **IMPORTANT:** Send only USDT (BEP20)\n` +
+                        `After sending, please send a screenshot of your transaction.`;
+      } else if (method === 'USDT TRON (TRC20)') {
+        paymentDetails = `**USDT TRON (TRC20) Details:**\n` +
+                        `Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n\n` +
+                        `📌 **IMPORTANT:** Send only USDT (TRC20)\n` +
+                        `After sending, please send a screenshot of your transaction.`;
+      } else {
+        paymentDetails = `**PayPal Details:**\n` +
+                        `Email: dave@starlifeadvert.com\n\n` +
+                        `After sending, please send a screenshot of your payment.`;
+      }
+      
+      await bot.sendMessage(chatId,
+        `✅ Payment Method: ${method}\n\n` +
+        `${paymentDetails}\n\n` +
+        `**Now, please send a photo/screenshot of your payment proof:**`
+      );
+    }
+    
+    // Withdrawal flow
+    else if (session.step === 'awaiting_withdrawal_amount') {
+      const amount = parseFloat(text);
+      
+      if (isNaN(amount) || amount < 2 || amount > session.data.balance) {
+        await bot.sendMessage(chatId,
+          `❌ Invalid amount.\n` +
+          `Minimum: $2\n` +
+          `Maximum: ${formatCurrency(session.data.balance)}\n\n` +
+          `Please enter a valid amount:`
+        );
+        return;
+      }
+      
+      const fee = calculateWithdrawalFee(amount);
+      const netAmount = calculateNetWithdrawal(amount);
+      
+      session.data.withdrawalAmount = amount;
+      session.data.fee = fee;
+      session.data.netAmount = netAmount;
+      session.step = 'awaiting_withdrawal_method';
+      
+      await bot.sendMessage(chatId,
+        `💰 **Withdrawal Details**\n\n` +
+        `Amount: ${formatCurrency(amount)}\n` +
+        `Fee (5%): ${formatCurrency(fee)}\n` +
+        `Net Amount: ${formatCurrency(netAmount)}\n\n` +
+        `Select withdrawal method:\n\n` +
+        `1️⃣ M-Pesa\n` +
+        `2️⃣ Bank Transfer\n` +
+        `3️⃣ PayPal\n\n` +
+        `Reply with number (1-3):`
+      );
+    }
+    else if (session.step === 'awaiting_withdrawal_method') {
+      const methodNumber = parseInt(text);
+      const methods = ['M-Pesa', 'Bank Transfer', 'PayPal'];
+      
+      if (isNaN(methodNumber) || methodNumber < 1 || methodNumber > 3) {
+        await bot.sendMessage(chatId, '❌ Please enter a number between 1-3:');
+        return;
+      }
+      
+      const method = methods[methodNumber - 1];
+      session.data.method = method;
+      session.step = 'awaiting_withdrawal_details';
+      
+      let detailsPrompt = '';
+      
+      if (method === 'M-Pesa') {
+        detailsPrompt = `Enter your M-Pesa phone number:\n` +
+                       `Example: 254712345678`;
+      } else if (method === 'Bank Transfer') {
+        detailsPrompt = `Enter your bank details:\n` +
+                       `• Account Name\n` +
+                       `• Account Number\n` +
+                       `• Bank Name`;
+      } else {
+        detailsPrompt = `Enter your PayPal email address:`;
+      }
+      
+      await bot.sendMessage(chatId,
+        `✅ Method: ${method}\n\n` +
+        `${detailsPrompt}\n\n` +
+        `Enter the required information:`
+      );
+    }
+    else if (session.step === 'awaiting_withdrawal_details') {
+      const details = text.trim();
+      
+      if (details.length < 3) {
+        await bot.sendMessage(chatId, '❌ Details too short. Please provide valid information:');
+        return;
+      }
+      
+      // Update user balance
+      await saveData(COLLECTIONS.USERS,
+        { memberId: session.data.memberId },
+        { $inc: { balance: -session.data.withdrawalAmount } }
+      );
+      
+      // Create withdrawal request
+      const withdrawalId = `WDL-${Date.now()}`;
+      
+      const withdrawal = {
+        id: withdrawalId,
+        memberId: session.data.memberId,
+        amount: session.data.withdrawalAmount,
+        fee: session.data.fee,
+        netAmount: session.data.netAmount,
+        method: session.data.method,
+        details: details,
+        status: 'pending',
+        date: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+      
+      await insertData(COLLECTIONS.WITHDRAWALS, withdrawal);
+      
+      // Record transaction
+      await insertData(COLLECTIONS.TRANSACTIONS, {
+        id: `TRX-WDL-${Date.now()}`,
+        memberId: session.data.memberId,
+        type: 'withdrawal',
+        amount: -session.data.withdrawalAmount,
+        description: `Withdrawal #${withdrawalId} (${session.data.method})`,
+        date: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      });
+      
+      delete userSessions[chatId];
+      
+      await bot.sendMessage(chatId,
+        `✅ **Withdrawal Request Submitted!**\n\n` +
+        `Amount: ${formatCurrency(session.data.withdrawalAmount)}\n` +
+        `Fee: ${formatCurrency(session.data.fee)}\n` +
+        `Net Amount: ${formatCurrency(session.data.netAmount)}\n` +
+        `Method: ${session.data.method}\n` +
+        `Withdrawal ID: ${withdrawalId}\n\n` +
+        `Your request has been sent for processing.\n` +
+        `Processing time: 10-15 minutes\n\n` +
+        `You will be notified when it's approved.`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const user = await getUserByMemberId(session.data.memberId);
+        
+        const adminMessage = `💳 **New Withdrawal Request**\n\n` +
+                            `ID: ${withdrawalId}\n` +
+                            `User: ${user.name} (${session.data.memberId})\n` +
+                            `Amount: ${formatCurrency(session.data.withdrawalAmount)}\n` +
+                            `Net Amount: ${formatCurrency(session.data.netAmount)}\n` +
+                            `Method: ${session.data.method}\n` +
+                            `Details: ${details}\n\n` +
+                            `**Approve:** /approve ${withdrawalId}\n` +
+                            `**Reject:** /reject ${withdrawalId}`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    
+    // Support flow
+    else if (session.step === 'support_topic') {
+      const topicNumber = parseInt(text);
+      
+      const user = await getUserByMemberId(session.data.memberId);
+      const isBanned = user ? user.banned : false;
+      
+      if (isBanned) {
+        if (isNaN(topicNumber) || topicNumber < 1 || topicNumber > 4) {
+          await bot.sendMessage(chatId, '❌ Please enter a number between 1-4:');
+          return;
+        }
+        
+        const bannedTopics = [
+          'Appeal Suspension',
+          'Account Recovery',
+          'Payment Issues',
+          'Other Issues'
+        ];
+        
+        const topic = bannedTopics[topicNumber - 1];
+        session.data.topic = `SUSPENDED - ${topic}`;
+        session.step = 'support_message';
+        
+        await bot.sendMessage(chatId,
+          `✅ Topic: ${topic}\n\n` +
+          `Please explain your situation in detail:\n` +
+          `• Why you believe your account was wrongly suspended\n` +
+          `• Any evidence to support your appeal\n` +
+          `• Your contact information\n\n` +
+          `Type your appeal message below:`
+        );
+      } else {
+        if (isNaN(topicNumber) || topicNumber < 1 || topicNumber > 6) {
+          await bot.sendMessage(chatId, '❌ Please enter a number between 1-6:');
+          return;
+        }
+        
+        const topics = [
+          'Account Issues',
+          'Investment Problems',
+          'Withdrawal Help',
+          'Referral Issues',
+          'Payment Proof/Upload',
+          'Other'
+        ];
+        
+        const topic = topics[topicNumber - 1];
+        session.data.topic = topic;
+        session.step = 'support_message';
+        
+        await bot.sendMessage(chatId,
+          `✅ Topic: ${topic}\n\n` +
+          `Please describe your issue in detail:\n` +
+          `Type your message below:`
+        );
+      }
+    }
+    else if (session.step === 'support_message') {
+      // Create or find support chat
+      const activeChat = await getActiveSupportChat(session.data.memberId);
+      
+      let chatIdStr;
+      
+      if (activeChat) {
+        chatIdStr = activeChat.id;
+        await saveData(COLLECTIONS.SUPPORT_CHATS,
+          { id: chatIdStr },
+          { 
+            $push: { 
+              messages: {
+                sender: 'user',
+                message: text,
+                timestamp: new Date().toISOString()
+              }
+            },
+            $set: {
+              updatedAt: new Date().toISOString(),
+              adminReplied: false
+            }
+          }
+        );
+      } else {
+        chatIdStr = `CHAT-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+        
+        const newChat = {
+          id: chatIdStr,
+          userId: session.data.memberId,
+          userName: session.data.userName,
+          topic: session.data.topic,
+          status: 'active',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          messages: [{
+            sender: 'user',
+            message: text,
+            timestamp: new Date().toISOString()
+          }],
+          adminReplied: false
+        };
+        
+        await insertData(COLLECTIONS.SUPPORT_CHATS, newChat);
+      }
+      
+      session.step = 'support_chat';
+      session.data.chatId = chatIdStr;
+      
+      await bot.sendMessage(chatId,
+        `✅ **Support Request Sent**\n\n` +
+        `Support Ticket ID: ${chatIdStr}\n` +
+        `Topic: ${session.data.topic}\n\n` +
+        `Our support team will respond within 15 minutes.\n\n` +
+        `**You can send:**\n` +
+        `• Text messages\n` +
+        `• Photos (screenshots)\n` +
+        `• Documents (PDFs, etc.)\n` +
+        `• Videos\n` +
+        `• Voice messages\n\n` +
+        `Type /endsupport to end chat`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `🆘 **New Support Request**\n\n` +
+                            `Chat ID: ${chatIdStr}\n` +
+                            `User: ${session.data.userName} (${session.data.memberId})\n` +
+                            `Topic: ${session.data.topic}\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${chatIdStr} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    else if (session.step === 'support_chat') {
+      const supportChat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: session.data.chatId });
+      
+      if (!supportChat) {
+        await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      if (supportChat.status === 'closed') {
+        await bot.sendMessage(chatId, '❌ This support chat has been closed by admin.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      await saveData(COLLECTIONS.SUPPORT_CHATS,
+        { id: session.data.chatId },
+        { 
+          $push: { 
+            messages: {
+              sender: 'user',
+              message: text,
+              timestamp: new Date().toISOString()
+            }
+          },
+          $set: {
+            updatedAt: new Date().toISOString(),
+            adminReplied: false
+          }
+        }
+      );
+      
+      await bot.sendMessage(chatId,
+        `✅ **Message sent**\n\n` +
+        `Support team will respond shortly.\n\n` +
+        `Type /endsupport to end chat`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `💬 **New Support Message**\n\n` +
+                            `Chat ID: ${session.data.chatId}\n` +
+                            `User: ${supportChat.userName} (${supportChat.userId})\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${session.data.chatId} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    
+    // Universal support flow
+    else if (session.step === 'universal_support_choice') {
+      const choice = parseInt(text);
+      
+      if (isNaN(choice) || choice < 1 || choice > 5) {
+        await bot.sendMessage(chatId, '❌ Please enter a number between 1-5:');
+        return;
+      }
+      
+      const choices = [
+        'Account Issues',
+        'General Questions',
+        'Technical Problems',
+        'Create New Account',
+        'Send Payment Proof'
+      ];
+      
+      session.data.topic = choices[choice - 1];
+      session.step = 'universal_support_message';
+      
+      await bot.sendMessage(chatId,
+        `✅ Topic: ${session.data.topic}\n\n` +
+        `Please describe your issue in detail:\n\n` +
+        `**Include these if relevant:**\n` +
+        `• Member ID (if you have one)\n` +
+        `• Your name\n` +
+        `• Email address\n` +
+        `• Screenshot details\n\n` +
+        `Type your message below:`
+      );
+    }
+    else if (session.step === 'universal_support_message') {
+      const chatIdStr = `CHAT-NOACC-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+      
+      const newChat = {
+        id: chatIdStr,
+        userId: `NO_ACCOUNT_${chatId}`,
+        userName: `User without account (Chat ID: ${chatId})`,
+        userChatId: chatId.toString(),
+        topic: session.data.topic,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [{
+          sender: 'user',
+          message: text,
+          timestamp: new Date().toISOString()
+        }],
+        adminReplied: false,
+        noAccount: true
+      };
+      
+      await insertData(COLLECTIONS.SUPPORT_CHATS, newChat);
+      
+      session.step = 'universal_support_chat';
+      session.data.chatId = chatIdStr;
+      
+      await bot.sendMessage(chatId,
+        `✅ **Support Request Sent**\n\n` +
+        `Support Ticket ID: ${chatIdStr}\n` +
+        `Topic: ${session.data.topic}\n\n` +
+        `Our support team will respond within 15 minutes.\n` +
+        `You don't need an account to continue chatting.\n\n` +
+        `**You can send:**\n` +
+        `• Text messages\n` +
+        `• Photos (screenshots)\n` +
+        `• Documents (PDFs, etc.)\n` +
+        `• Videos\n` +
+        `• Voice messages\n\n` +
+        `Type /endsupport to end chat`
+      );
+      
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `🆘 **New Support (No Account)**\n\n` +
+                            `Chat ID: ${chatIdStr}\n` +
+                            `User: No account (Chat ID: ${chatId})\n` +
+                            `Topic: ${session.data.topic}\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${chatIdStr} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    else if (session.step === 'universal_support_chat') {
+      const supportChat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: session.data.chatId });
+      
+      if (!supportChat) {
+        await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      await saveData(COLLECTIONS.SUPPORT_CHATS,
+        { id: session.data.chatId },
+        { 
+          $push: { 
+            messages: {
+              sender: 'user',
+              message: text,
+              timestamp: new Date().toISOString()
+            }
+          },
+          $set: {
+            updatedAt: new Date().toISOString(),
+            adminReplied: false
+          }
+        }
+      );
+      
+      await bot.sendMessage(chatId,
+        `✅ **Message sent**\n\n` +
+        `Support team will respond shortly.\n\n` +
+        `Type /endsupport to end chat`
+      );
+      
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `💬 **No Account User Message**\n\n` +
+                            `Chat ID: ${session.data.chatId}\n` +
+                            `User: ${supportChat.userName}\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${session.data.chatId} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
     
   } catch (error) {
     console.log('Message handling error:', error.message);
@@ -1574,10 +1774,89 @@ bot.on('message', async (msg) => {
   }
 });
 
+// ==================== MEDIA HANDLERS ====================
+bot.on('photo', async (msg) => {
+  const chatId = msg.chat.id;
+  const session = userSessions[chatId];
+  
+  if (session && session.step === 'awaiting_investment_proof') {
+    try {
+      const photo = msg.photo[msg.photo.length - 1];
+      const fileId = photo.file_id;
+      const caption = msg.caption || '';
+      
+      const investmentId = `INV-${Date.now()}`;
+      
+      const investment = {
+        id: investmentId,
+        memberId: session.data.memberId,
+        amount: session.data.amount,
+        paymentMethod: session.data.paymentMethod,
+        status: 'pending',
+        date: new Date().toISOString(),
+        daysActive: 0,
+        totalProfit: 0,
+        proofMediaId: `MEDIA-${Date.now()}`,
+        proofCaption: caption || `Payment proof for $${session.data.amount}`
+      };
+      
+      await insertData(COLLECTIONS.INVESTMENTS, investment);
+      
+      await insertData(COLLECTIONS.MEDIA_FILES, {
+        id: `MEDIA-${Date.now()}`,
+        fileId: fileId,
+        fileType: 'photo',
+        caption: `Payment proof for ${formatCurrency(session.data.amount)} (Method: ${session.data.paymentMethod})`,
+        investmentId: investmentId,
+        sender: session.data.memberId,
+        timestamp: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      });
+      
+      delete userSessions[chatId];
+      
+      await bot.sendMessage(chatId,
+        `✅ **Payment Proof Received!**\n\n` +
+        `Amount: ${formatCurrency(session.data.amount)}\n` +
+        `Payment Method: ${session.data.paymentMethod}\n` +
+        `Investment ID: ${investmentId}\n\n` +
+        `Your investment is pending approval.\n` +
+        `Our team will review your payment proof and activate your investment within 15 minutes.\n\n` +
+        `You will be notified once it's approved.`
+      );
+      
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const user = await getUserByMemberId(session.data.memberId);
+        
+        const adminMessage = `📈 **New Investment Request**\n\n` +
+                            `Investment ID: ${investmentId}\n` +
+                            `User: ${user.name} (${session.data.memberId})\n` +
+                            `Amount: ${formatCurrency(session.data.amount)}\n` +
+                            `Payment Method: ${session.data.paymentMethod}\n` +
+                            `Date: ${new Date().toLocaleString()}\n\n` +
+                            `**Approve:** /approveinvestment ${investmentId}\n` +
+                            `**Reject:** /rejectinvestment ${investmentId}`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    } catch (error) {
+      console.log('Error handling investment photo:', error.message);
+      await bot.sendMessage(chatId, '❌ Error sending payment proof. Please try again.');
+    }
+  }
+});
+
 // ==================== ADMIN COMMANDS ====================
 
-// Admin panel
-bot.onText(/\/admin/, async (msg) => {
+// /users command
+bot.onText(/\/users/, async (msg) => {
   const chatId = msg.chat.id;
   
   if (!isAdmin(chatId)) {
@@ -1585,70 +1864,166 @@ bot.onText(/\/admin/, async (msg) => {
     return;
   }
   
-  const adminMessage = `⚡ **ADMIN PANEL**\n\n` +
-                      `📊 **Dashboard:**\n` +
-                      `/stats - System statistics\n` +
-                      `/admin - Show this menu\n\n` +
-                      `👥 **User Management:**\n` +
-                      `/users - List all users\n` +
-                      `/view USER_ID - View user details\n` +
-                      `/suspend USER_ID - Suspend user\n` +
-                      `/unsuspend USER_ID - Unsuspend user\n` +
-                      `/resetpass USER_ID - Reset password\n` +
-                      `/delete USER_ID - Delete user\n` +
-                      `/findref REF_CODE - Find user by referral code\n` +
-                      `/message USER_ID - Message user directly\n` +
-                      `/checkbinding USER_ID - Check Telegram binding\n\n` +
-                      `💰 **Financial Management:**\n` +
-                      `/addbalance USER_ID AMOUNT - Add balance\n` +
-                      `/deductbalance USER_ID AMOUNT - Deduct balance\n\n` +
-                      `📈 **Investment Management:**\n` +
-                      `/investments - List all investments\n` +
-                      `/approveinvestment INV_ID - Approve investment\n` +
-                      `/rejectinvestment INV_ID - Reject investment\n` +
-                      `/manualinv USER_ID AMOUNT - Add manual investment\n` +
-                      `/deductinv USER_ID AMOUNT - Deduct investment amount\n` +
-                      `/viewproof INV_ID - View payment proof\n\n` +
-                      `💳 **Withdrawal Management:**\n` +
-                      `/withdrawals - List withdrawals\n` +
-                      `/approve WDL_ID - Approve withdrawal\n` +
-                      `/reject WDL_ID - Reject withdrawal\n\n` +
-                      `👥 **Referral Management:**\n` +
-                      `/referrals - List all referrals\n` +
-                      `/addrefbonus USER_ID AMOUNT - Add referral bonus\n\n` +
-                      `🆘 **Support Management:**\n` +
-                      `/supportchats - View active chats\n` +
-                      `/viewchat CHAT_ID - View specific chat\n` +
-                      `/viewmedia CHAT_ID - View media in chat\n` +
-                      `/replychat CHAT_ID MESSAGE - Reply to chat\n` +
-                      `/closechat CHAT_ID - Close chat\n\n` +
-                      `📢 **Broadcast:**\n` +
-                      `/broadcast MESSAGE - Send to all users`;
-  
-  await bot.sendMessage(chatId, adminMessage);
+  try {
+    const users = await loadData(COLLECTIONS.USERS, {}, { joinedDate: -1 }, 10);
+    
+    if (users.length === 0) {
+      await bot.sendMessage(chatId, '📭 No users found.');
+      return;
+    }
+    
+    let message = `👥 **Recent Users (Last 10)**\n\n`;
+    
+    users.forEach((user, index) => {
+      const status = user.banned ? '🚫' : '✅';
+      const balance = formatCurrency(user.balance || 0);
+      message += `${index + 1}. ${status} ${user.name} (${user.memberId})\n`;
+      message += `   Balance: ${balance} | Ref: ${user.referrals || 0}\n\n`;
+    });
+    
+    const totalUsers = await db.collection(COLLECTIONS.USERS).countDocuments();
+    message += `**Total Users:** ${totalUsers}\n\n`;
+    message += `**View user:** /view USER_ID\n`;
+    message += `**Example:** /view USER-1000`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /users:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading users.');
+  }
 });
 
-// Add other admin commands (stats, view, addbalance, etc.)
-// Due to character limits, I've included the framework
+// /view command
+bot.onText(/\/view (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const user = await getUserByMemberId(memberId);
+    
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+    
+    const investments = await loadData(COLLECTIONS.INVESTMENTS, { memberId: memberId });
+    const withdrawals = await loadData(COLLECTIONS.WITHDRAWALS, { memberId: memberId });
+    const referrals = await loadData(COLLECTIONS.REFERRALS, { referrerId: memberId });
+    
+    const message = `👤 **User Details**\n\n` +
+                   `Name: ${user.name}\n` +
+                   `Member ID: ${user.memberId}\n` +
+                   `Email: ${user.email || 'N/A'}\n` +
+                   `Chat ID: ${user.chatId || 'N/A'}\n` +
+                   `Status: ${user.banned ? '🚫 Banned' : '✅ Active'}\n` +
+                   `Joined: ${new Date(user.joinedDate).toLocaleString()}\n` +
+                   `Last Login: ${user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never'}\n\n` +
+                   `💰 **Financials**\n` +
+                   `Balance: ${formatCurrency(user.balance || 0)}\n` +
+                   `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n` +
+                   `Total Earned: ${formatCurrency(user.totalEarned || 0)}\n` +
+                   `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n` +
+                   `📊 **Stats**\n` +
+                   `Referrals: ${user.referrals || 0}\n` +
+                   `Referral Code: ${user.referralCode || 'N/A'}\n` +
+                   `Investments: ${investments.length}\n` +
+                   `Withdrawals: ${withdrawals.length}\n` +
+                   `Referral Network: ${referrals.length}\n\n` +
+                   `**Actions:**\n` +
+                   `💰 Add Balance: /addbalance ${memberId} AMOUNT\n` +
+                   `🔐 Reset Pass: /resetpass ${memberId}\n` +
+                   `📨 Message: /message ${memberId}\n` +
+                   `${user.banned ? `✅ Unsuspend: /unsuspend ${memberId}` : `🚫 Suspend: /suspend ${memberId}`}`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /view:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading user details.');
+  }
+});
+
+// /addbalance command
+bot.onText(/\/addbalance (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const amount = parseFloat(match[2]);
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  if (isNaN(amount) || amount <= 0) {
+    await bot.sendMessage(chatId, '❌ Invalid amount. Use: /addbalance USER_ID AMOUNT');
+    return;
+  }
+  
+  try {
+    const user = await getUserByMemberId(memberId);
+    
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+    
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { $inc: { balance: amount } }
+    );
+    
+    await insertData(COLLECTIONS.TRANSACTIONS, {
+      id: `ADMIN-ADD-${Date.now()}`,
+      memberId: memberId,
+      type: 'admin_add_balance',
+      amount: amount,
+      description: `Admin added balance`,
+      date: new Date().toISOString(),
+      adminId: chatId.toString(),
+      createdAt: new Date().toISOString()
+    });
+    
+    await bot.sendMessage(chatId,
+      `✅ **Balance Added Successfully**\n\n` +
+      `User: ${user.name} (${memberId})\n` +
+      `Amount Added: ${formatCurrency(amount)}\n` +
+      `New Balance: ${formatCurrency((user.balance || 0) + amount)}`
+    );
+    
+    await sendUserNotification(memberId,
+      `💰 **Admin Added Balance**\n\n` +
+      `Amount: ${formatCurrency(amount)}\n` +
+      `New Balance: ${formatCurrency((user.balance || 0) + amount)}\n\n` +
+      `This was added by an administrator.`
+    );
+  } catch (error) {
+    console.log('Error in /addbalance:', error.message);
+    await bot.sendMessage(chatId, '❌ Error adding balance.');
+  }
+});
 
 // ==================== SERVER STARTUP ====================
-
 const server = app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🤖 Bot Token: ${TELEGRAM_TOKEN ? '✅ Set' : '❌ Missing'}`);
+  console.log(`🗄️  MongoDB URI: ${MONGODB_URI ? '✅ Set' : '❌ Missing'}`);
+  
   try {
     const mongoConnected = await initMongoDB();
     if (mongoConnected) {
       scheduleDailyProfits();
       console.log('✅ Bot system initialized successfully');
-      console.log('📊 All data is now stored in MongoDB Atlas');
-      console.log('🔒 No hardcoded secrets - all from environment variables');
+      console.log('📊 MongoDB connected');
+      console.log('💰 Daily profit scheduler started');
     } else {
       console.log('❌ Failed to connect to MongoDB');
-      process.exit(1);
     }
   } catch (error) {
     console.log('❌ Initialization error:', error.message);
-    process.exit(1);
   }
 });
 
@@ -1658,19 +2033,20 @@ app.get('/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    users: Object.keys(userSessions).length,
-    loggedOutUsers: loggedOutUsers.size,
-    adminSessions: Object.keys(adminSessions).length,
-    mongoConnected: !!db
+    bot: 'running',
+    mongo: !!db
   });
 });
 
 app.get('/', (req, res) => {
-  res.send('Starlife Advert Bot is running with MongoDB!');
+  res.send('Starlife Advert Bot is running!');
 });
 
-// Graceful shutdown
+// Error handlers
+bot.on('polling_error', (error) => {
+  console.log('Polling error:', error.message);
+});
+
 process.on('SIGTERM', async () => {
   console.log('🛑 Shutting down gracefully...');
   if (client) {
@@ -1683,16 +2059,5 @@ process.on('SIGTERM', async () => {
   });
 });
 
-process.on('SIGINT', async () => {
-  console.log('🛑 Shutting down gracefully...');
-  if (client) {
-    await client.close();
-    console.log('✅ MongoDB connection closed');
-  }
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
-});
-
 console.log('✅ Starlife Advert Bot is ready!');
+console.log('📱 Commands available: /start, /register, /login, /invest, /withdraw, /profile, /support, /admin');
