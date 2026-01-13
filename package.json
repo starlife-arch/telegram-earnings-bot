@@ -1,27 +1,19 @@
 {
-  "name": "telegram-earnings-bot",
-  "version": "2.0.0",
-  "description": "Enhanced Telegram bot for earnings with user accounts and admin features",
-  "main": "bot.js",
+  "name": "starlife-advert-bot",
+  "version": "1.0.0",
+  "description": "Starlife Advert Telegram Bot with MongoDB",
+  "main": "index.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "nodemon bot.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
-    "node-telegram-bot-api": "^0.64.0",
-    "axios": "^1.6.0",
-    "express": "^4.18.2"
+    "node-telegram-bot-api": "^0.61.0",
+    "express": "^4.18.2",
+    "mongodb": "^5.7.0",
+    "crypto": "^1.0.1"
   },
-  "engines": {
-    "node": "18.x"
-  },
-  "keywords": [
-    "telegram",
-    "bot",
-    "earnings",
-    "crypto",
-    "withdrawal"
-  ],
-  "author": "Your Name",
-  "license": "MIT"
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
 }
