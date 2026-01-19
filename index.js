@@ -2,7 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const crypto = require('crypto');
 const { Pool } = require('pg');
-const nodemailer = require("nodemailer");
+const nodemailer = require('nodemailer');
 
 const transporter = nodemailer.createTransport({
   host: "smtp-relay.brevo.com",
@@ -23,6 +23,260 @@ async function sendEmail(to, subject, text) {
     replyTo: process.env.MAIL_REPLY_TO,
   });
 }
+
+// ==================== EMAIL NOTIFICATION HELPER ====================
+
+// Helper function to send email notifications
+async function sendEmailNotification(memberId, subject, templateName, data = {}) {
+  try {
+    const user = await getUserByMemberId(memberId);
+    if (!user || !user.email) {
+      console.log(`No email found for user ${memberId}`);
+      return false;
+    }
+
+    // Email templates
+    const templates = {
+      'welcome': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `Welcome to Starlife Advert! Your account has been successfully created.\n\n` +
+               `📋 **Account Details:**\n` +
+               `Member ID: ${data.memberId}\n` +
+               `Name: ${data.name}\n` +
+               `Email: ${data.email}\n` +
+               `Password: ${data.password}\n` +
+               `Referral Code: ${data.referralCode}\n` +
+               `Join Date: ${new Date(data.joinDate).toLocaleDateString()}\n\n` +
+               `💰 **Payment Methods:**\n` +
+               `• M-Pesa Till: 6034186\n` +
+               `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
+               `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
+               `• PayPal: dave@starlifeadvert.com\n` +
+               `Name: Starlife Advert US Agency\n\n` +
+               `📈 **Start Earning:**\n` +
+               `1. Use /invest to make your first investment\n` +
+               `2. Minimum investment: $10\n` +
+               `3. Earn 2% daily profit (LIFETIME)\n` +
+               `4. Share your referral code to earn 10% on FIRST investments!\n\n` +
+               `🔒 **Account Security:**\n` +
+               `This Telegram account is PERMANENTLY linked to your Member ID.\n` +
+               `Save your Member ID and Password for future login.\n\n` +
+               `Need help? Use /support in the bot.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'investment_pending': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `Your investment request has been received and is pending approval.\n\n` +
+               `📊 **Investment Details:**\n` +
+               `Amount: $${data.amount.toFixed(2)}\n` +
+               `Payment Method: ${data.paymentMethod}\n` +
+               `Investment ID: ${data.investmentId}\n` +
+               `Transaction Hash: ${data.transactionHash || 'N/A'}\n` +
+               `Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `⏳ **Status:** Pending Approval\n` +
+               `Our team will review your payment proof and activate your investment within 15 minutes.\n\n` +
+               `You will receive another email when your investment is approved.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'investment_approved': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `🎉 **Your investment has been approved!**\n\n` +
+               `📊 **Investment Details:**\n` +
+               `Amount: $${data.amount.toFixed(2)}\n` +
+               `Investment ID: ${data.investmentId}\n` +
+               `Daily Profit: $${(data.amount * 0.02).toFixed(2)}\n` +
+               `Duration: LIFETIME (no expiration)\n` +
+               `Approval Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `💰 **What happens next:**\n` +
+               `• You will earn 2% daily profit starting today\n` +
+               `• Profits are automatically added to your balance\n` +
+               `• No action required from you\n` +
+               `• Your investment will earn forever\n\n` +
+               `${data.isFirstInvestment ? '🎉 **This is your FIRST investment!** If you were referred, your referrer earned 10% bonus.\n\n' : ''}` +
+               `Check your earnings with /earnings command in the bot.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'investment_rejected': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `❌ **Investment Rejected**\n\n` +
+               `Your investment request has been rejected.\n\n` +
+               `📊 **Investment Details:**\n` +
+               `Amount: $${data.amount.toFixed(2)}\n` +
+               `Investment ID: ${data.investmentId}\n` +
+               `Payment Method: ${data.paymentMethod}\n` +
+               `Rejection Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `**Possible reasons:**\n` +
+               `• Invalid payment proof\n` +
+               `• Transaction not found\n` +
+               `• Suspicious activity\n` +
+               `• Incorrect payment details\n\n` +
+               `Please contact support with /support in the bot for more information.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'withdrawal_request': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `Your withdrawal request has been received.\n\n` +
+               `💳 **Withdrawal Details:**\n` +
+               `Amount: $${data.amount.toFixed(2)}\n` +
+               `Fee (5%): $${data.fee.toFixed(2)}\n` +
+               `Net Amount: $${data.netAmount.toFixed(2)}\n` +
+               `Method: ${data.method}\n` +
+               `Withdrawal ID: ${data.withdrawalId}\n` +
+               `Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `⏳ **Status:** Pending Approval\n` +
+               `Our team will process your withdrawal within 10-15 minutes.\n\n` +
+               `You will receive another email when your withdrawal is processed.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'withdrawal_approved': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `✅ **Withdrawal Approved!**\n\n` +
+               `Your withdrawal has been approved and will be processed shortly.\n\n` +
+               `💳 **Withdrawal Details:**\n` +
+               `Amount: $${data.amount.toFixed(2)}\n` +
+               `Fee (5%): $${data.fee.toFixed(2)}\n` +
+               `Net Amount: $${data.netAmount.toFixed(2)}\n` +
+               `Method: ${data.method}\n` +
+               `Withdrawal ID: ${data.withdrawalId}\n` +
+               `Details: ${data.details}\n` +
+               `Approval Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `💰 **Processing Time:**\n` +
+               `• M-Pesa: 10-15 minutes\n` +
+               `• Bank Transfer: 1-2 business days\n` +
+               `• PayPal: 10-15 minutes\n\n` +
+               `If you don't receive your funds within the expected time, please contact support.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'withdrawal_rejected': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `❌ **Withdrawal Rejected**\n\n` +
+               `Your withdrawal request has been rejected.\n\n` +
+               `💳 **Withdrawal Details:**\n` +
+               `Amount: $${data.amount.toFixed(2)}\n` +
+               `Fee (5%): $${data.fee.toFixed(2)}\n` +
+               `Net Amount: $${data.netAmount.toFixed(2)}\n` +
+               `Method: ${data.method}\n` +
+               `Withdrawal ID: ${data.withdrawalId}\n` +
+               `Rejection Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `💸 **Refund Status:**\n` +
+               `Your funds ($${data.amount.toFixed(2)}) have been refunded to your account balance.\n\n` +
+               `**Possible reasons:**\n` +
+               `• Invalid payment details\n` +
+               `• Suspicious activity\n` +
+               `• Account verification required\n` +
+               `• Technical issues\n\n` +
+               `Please contact support with /support in the bot for more information.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'account_suspended': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `🚫 **Account Suspended**\n\n` +
+               `Your account has been suspended by an administrator.\n\n` +
+               `📋 **Account Details:**\n` +
+               `Member ID: ${data.memberId}\n` +
+               `Name: ${data.name}\n` +
+               `Suspension Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `❌ **What this means:**\n` +
+               `• You cannot access your account\n` +
+               `• You cannot make investments\n` +
+               `• You cannot withdraw funds\n` +
+               `• Your balance is frozen\n\n` +
+               `✅ **What you can do:**\n` +
+               `1. Submit an appeal with /appeal in the bot\n` +
+               `2. Contact support with /support\n` +
+               `3. Wait for admin review\n\n` +
+               `If you believe this is an error, please submit an appeal immediately.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'account_unsuspended': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `✅ **Account Reactivated!**\n\n` +
+               `Your account has been reactivated by an administrator.\n\n` +
+               `📋 **Account Details:**\n` +
+               `Member ID: ${data.memberId}\n` +
+               `Name: ${data.name}\n` +
+               `Reactivation Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `🎉 **Welcome back!**\n\n` +
+               `Your account is now fully accessible:\n` +
+               `• You can login with /login\n` +
+               `• You can make investments\n` +
+               `• You can withdraw funds\n` +
+               `• Your balance is available\n\n` +
+               `Thank you for your patience.\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'password_reset': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `🔐 **Password Reset**\n\n` +
+               `Your password has been reset by an administrator.\n\n` +
+               `📋 **Login Details:**\n` +
+               `Member ID: ${data.memberId}\n` +
+               `New Password: ${data.newPassword}\n` +
+               `Reset Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `⚠️ **Security Notice:**\n` +
+               `• Login immediately and change your password\n` +
+               `• Use /changepassword after logging in\n` +
+               `• Never share your password\n` +
+               `• If you didn't request this, contact support immediately\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      },
+
+      'password_changed': (data) => {
+        return `Dear ${data.name},\n\n` +
+               `✅ **Password Changed Successfully**\n\n` +
+               `Your password has been changed.\n\n` +
+               `📋 **Account Details:**\n` +
+               `Member ID: ${data.memberId}\n` +
+               `Change Date: ${new Date(data.date).toLocaleString()}\n\n` +
+               `🔒 **Security Tips:**\n` +
+               `• Never share your password\n` +
+               `• Use a strong, unique password\n` +
+               `• Change password regularly\n` +
+               `• If you suspect unauthorized access, contact support immediately\n\n` +
+               `Best regards,\n` +
+               `Starlife Advert Team`;
+      }
+    };
+
+    // Get the email template
+    const template = templates[templateName];
+    if (!template) {
+      console.log(`Email template ${templateName} not found`);
+      return false;
+    }
+
+    const emailBody = template(data);
+    
+    // Send the email
+    await sendEmail(user.email, subject, emailBody);
+    console.log(`📧 Email sent to ${user.email} for ${templateName}`);
+    return true;
+  } catch (error) {
+    console.error(`Failed to send email to ${memberId}:`, error.message);
+    return false;
+  }
+}
+
+// ==================== END OF EMAIL NOTIFICATION HELPER ====================
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1495,6 +1749,27 @@ bot.on('photo', async (msg) => {
         sender: session.data.memberId
       });
       
+      // SEND INVESTMENT PENDING EMAIL
+      try {
+        const user = await getUserByMemberId(session.data.memberId);
+        if (user && user.email) {
+          await sendEmailNotification(session.data.memberId,
+            `Investment Submitted - Pending Approval`,
+            'investment_pending',
+            {
+              name: user.name,
+              amount: session.data.amount,
+              paymentMethod: session.data.paymentMethod,
+              investmentId: investmentId,
+              transactionHash: session.data.transactionHash || '',
+              date: new Date()
+            }
+          );
+        }
+      } catch (emailError) {
+        console.log('Investment pending email failed:', emailError.message);
+      }
+      
       delete userSessions[chatId];
       
       await bot.sendMessage(chatId,
@@ -2741,6 +3016,22 @@ bot.on('message', async (msg) => {
         `Use /changepassword to set a new password.`
       );
       
+      // SEND PASSWORD RESET EMAIL
+      try {
+        await sendEmailNotification(user.member_id,
+          `Password Reset Request`,
+          'password_reset',
+          {
+            name: user.name,
+            memberId: user.member_id,
+            newPassword: newPassword,
+            date: new Date()
+          }
+        );
+      } catch (emailError) {
+        console.log('Password reset email failed:', emailError.message);
+      }
+      
       await bot.sendMessage(chatId,
         `✅ **Password Reset Initiated**\n\n` +
         `A new password has been sent to the registered chat for ${memberId}.\n\n` +
@@ -2786,6 +3077,22 @@ bot.on('message', async (msg) => {
         `For security, change your password after logging in.\n` +
         `Use /changepassword to set a new password.`
       );
+      
+      // SEND PASSWORD RESET EMAIL
+      try {
+        await sendEmailNotification(user.member_id,
+          `Password Reset Request`,
+          'password_reset',
+          {
+            name: user.name,
+            memberId: user.member_id,
+            newPassword: newPassword,
+            date: new Date()
+          }
+        );
+      } catch (emailError) {
+        console.log('Password reset email failed:', emailError.message);
+      }
       
       await bot.sendMessage(chatId,
         `✅ **Password Reset Initiated**\n\n` +
@@ -2855,6 +3162,24 @@ bot.on('message', async (msg) => {
       });
       
       delete userSessions[chatId];
+      
+      // SEND PASSWORD CHANGE EMAIL
+      try {
+        const user = await getUserByMemberId(session.data.memberId);
+        if (user && user.email) {
+          await sendEmailNotification(session.data.memberId,
+            `Password Changed Successfully`,
+            'password_changed',
+            {
+              name: user.name,
+              memberId: session.data.memberId,
+              date: new Date()
+            }
+          );
+        }
+      } catch (emailError) {
+        console.log('Password change email failed:', emailError.message);
+      }
       
       await bot.sendMessage(chatId,
         `✅ **Password Changed Successfully!**\n\n` +
@@ -3056,6 +3381,24 @@ bot.on('message', async (msg) => {
                        `✅ You are now logged in!`;
       
       await bot.sendMessage(chatId, welcomeMessage);
+      
+      // SEND WELCOME EMAIL
+      try {
+        await sendEmailNotification(memberId, 
+          `Welcome to Starlife Advert, ${session.data.name}!`,
+          'welcome',
+          {
+            name: session.data.name,
+            memberId: memberId,
+            email: session.data.email,
+            password: session.data.password,
+            referralCode: referralCode,
+            joinDate: new Date()
+          }
+        );
+      } catch (emailError) {
+        console.log('Welcome email failed:', emailError.message);
+      }
       
       // Record transaction
       await createTransaction({
@@ -3418,6 +3761,25 @@ bot.on('message', async (msg) => {
       };
       
       await createWithdrawal(withdrawal);
+      
+      // SEND WITHDRAWAL REQUEST EMAIL
+      try {
+        await sendEmailNotification(session.data.memberId,
+          `Withdrawal Request Submitted`,
+          'withdrawal_request',
+          {
+            name: user.name,
+            amount: session.data.withdrawalAmount,
+            fee: session.data.fee,
+            netAmount: session.data.netAmount,
+            method: session.data.method,
+            withdrawalId: withdrawalId,
+            date: new Date()
+          }
+        );
+      } catch (emailError) {
+        console.log('Withdrawal request email failed:', emailError.message);
+      }
       
       // Record transaction
       await createTransaction({
@@ -4431,6 +4793,22 @@ bot.onText(/\/resetpass (.+)/, async (msg, match) => {
       last_password_change: new Date()
     });
     
+    // SEND PASSWORD RESET EMAIL
+    try {
+      await sendEmailNotification(memberId,
+        `Password Reset by Admin`,
+        'password_reset',
+        {
+          name: user.name,
+          memberId: memberId,
+          newPassword: newPassword,
+          date: new Date()
+        }
+      );
+    } catch (emailError) {
+      console.log('Password reset email failed:', emailError.message);
+    }
+    
     await bot.sendMessage(chatId,
       `✅ **Password Reset Successful**\n\n` +
       `User: ${user.name} (${memberId})\n` +
@@ -4479,6 +4857,21 @@ bot.onText(/\/suspend (.+)/, async (msg, match) => {
     
     await updateUser(memberId, { banned: true });
     
+    // SEND ACCOUNT SUSPENDED EMAIL
+    try {
+      await sendEmailNotification(memberId,
+        `Account Suspended`,
+        'account_suspended',
+        {
+          name: user.name,
+          memberId: memberId,
+          date: new Date()
+        }
+      );
+    } catch (emailError) {
+      console.log('Account suspended email failed:', emailError.message);
+    }
+    
     await bot.sendMessage(chatId,
       `🚫 **User Suspended**\n\n` +
       `User: ${user.name} (${memberId})\n` +
@@ -4523,6 +4916,21 @@ bot.onText(/\/unsuspend (.+)/, async (msg, match) => {
     }
     
     await updateUser(memberId, { banned: false });
+    
+    // SEND ACCOUNT UNSUSPENDED EMAIL
+    try {
+      await sendEmailNotification(memberId,
+        `Account Reactivated`,
+        'account_unsuspended',
+        {
+          name: user.name,
+          memberId: memberId,
+          date: new Date()
+        }
+      );
+    } catch (emailError) {
+      console.log('Account unsuspended email failed:', emailError.message);
+    }
     
     await bot.sendMessage(chatId,
       `✅ **User Unsuspended**\n\n` +
@@ -5046,6 +5454,26 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
       }
     }
     
+    // SEND INVESTMENT APPROVED EMAIL
+    try {
+      const user = await getUserByMemberId(investment.member_id);
+      if (user && user.email) {
+        await sendEmailNotification(investment.member_id,
+          `Investment Approved!`,
+          'investment_approved',
+          {
+            name: user.name,
+            amount: investment.amount,
+            investmentId: investmentId,
+            isFirstInvestment: isFirstInvestment,
+            date: new Date()
+          }
+        );
+      }
+    } catch (emailError) {
+      console.log('Investment approved email failed:', emailError.message);
+    }
+    
     await bot.sendMessage(chatId,
       `✅ **Investment Approved**\n\n` +
       `ID: ${investmentId}\n` +
@@ -5115,6 +5543,26 @@ bot.onText(/\/rejectinvestment (.+)/, async (msg, match) => {
       rejected_at: new Date(),
       rejected_by: chatId.toString()
     });
+    
+    // SEND INVESTMENT REJECTED EMAIL
+    try {
+      const user = await getUserByMemberId(investment.member_id);
+      if (user && user.email) {
+        await sendEmailNotification(investment.member_id,
+          `Investment Rejected`,
+          'investment_rejected',
+          {
+            name: user.name,
+            amount: investment.amount,
+            paymentMethod: investment.payment_method,
+            investmentId: investmentId,
+            date: new Date()
+          }
+        );
+      }
+    } catch (emailError) {
+      console.log('Investment rejected email failed:', emailError.message);
+    }
     
     await bot.sendMessage(chatId,
       `❌ **Investment Rejected**\n\n` +
@@ -5674,6 +6122,29 @@ bot.onText(/\/approve (.+)/, async (msg, match) => {
       approved_by: chatId.toString()
     });
     
+    // SEND WITHDRAWAL APPROVED EMAIL
+    try {
+      const user = await getUserByMemberId(withdrawal.member_id);
+      if (user && user.email) {
+        await sendEmailNotification(withdrawal.member_id,
+          `Withdrawal Approved`,
+          'withdrawal_approved',
+          {
+            name: user.name,
+            amount: withdrawal.amount,
+            fee: withdrawal.fee,
+            netAmount: withdrawal.net_amount || withdrawal.amount,
+            method: withdrawal.method,
+            withdrawalId: withdrawalId,
+            details: withdrawal.details,
+            date: new Date()
+          }
+        );
+      }
+    } catch (emailError) {
+      console.log('Withdrawal approved email failed:', emailError.message);
+    }
+    
     await bot.sendMessage(chatId,
       `✅ **Withdrawal Approved**\n\n` +
       `ID: ${withdrawalId}\n` +
@@ -5745,6 +6216,28 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
     if (user) {
       const newBalance = parseFloat(user.balance || 0) + withdrawal.amount;
       await updateUser(withdrawal.member_id, { balance: newBalance });
+    }
+    
+    // SEND WITHDRAWAL REJECTED EMAIL
+    try {
+      const user = await getUserByMemberId(withdrawal.member_id);
+      if (user && user.email) {
+        await sendEmailNotification(withdrawal.member_id,
+          `Withdrawal Rejected`,
+          'withdrawal_rejected',
+          {
+            name: user.name,
+            amount: withdrawal.amount,
+            fee: withdrawal.fee,
+            netAmount: withdrawal.net_amount || withdrawal.amount,
+            method: withdrawal.method,
+            withdrawalId: withdrawalId,
+            date: new Date()
+          }
+        );
+      }
+    } catch (emailError) {
+      console.log('Withdrawal rejected email failed:', emailError.message);
     }
     
     await bot.sendMessage(chatId,
@@ -5827,6 +6320,39 @@ bot.onText(/\/broadcast (.+)/, async (msg, match) => {
   }
 });
 
+// ==================== TEST EMAIL COMMAND ====================
+
+// Add test email command
+bot.onText(/\/testemail/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getLoggedInUser(chatId);
+  
+  if (!user) {
+    await bot.sendMessage(chatId, 'Please login first');
+    return;
+  }
+  
+  try {
+    await sendEmailNotification(user.member_id, 
+      'Test Email from Starlife Advert',
+      'welcome',
+      {
+        name: user.name,
+        memberId: user.member_id,
+        email: user.email,
+        password: 'test123',
+        referralCode: user.referral_code,
+        joinDate: user.joined_date
+      }
+    );
+    
+    await bot.sendMessage(chatId, '✅ Test email sent to your registered email');
+  } catch (error) {
+    console.error(error);
+    await bot.sendMessage(chatId, '❌ Email failed: ' + error.message);
+  }
+});
+
 // ==================== HEALTH CHECK ENDPOINT ====================
 
 app.get('/health', async (req, res) => {
@@ -5888,7 +6414,13 @@ process.on('SIGINT', () => {
 
 console.log('✅ Starlife Advert Bot is running with PostgreSQL!');
 console.log('✅ Data is now permanently stored in PostgreSQL database');
-console.log('✅ No more data loss after 24 hours!');
-
-
-
+console.log('✅ Email notifications are now enabled for all events!');
+console.log('📧 Emails will be sent for:');
+console.log('   - Registration');
+console.log('   - Investment submissions');
+console.log('   - Investment approvals/rejections');
+console.log('   - Withdrawal requests');
+console.log('   - Withdrawal approvals/rejections');
+console.log('   - Account suspensions/unsuspensions');
+console.log('   - Password resets/changes');
+console.log('✅ Use /testemail to test email functionality');
