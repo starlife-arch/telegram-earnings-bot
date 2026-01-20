@@ -278,6 +278,274 @@ async function sendEmailNotification(memberId, subject, templateName, data = {})
 
 // ==================== END OF EMAIL NOTIFICATION HELPER ====================
 
+// ==================== BROADCAST EMAIL HELPER ====================
+
+// Helper function to send broadcast emails to all users
+async function sendBroadcastEmailToAll(subject, message, excludeAdmins = false) {
+  try {
+    console.log(`Starting email broadcast: ${subject}`);
+    
+    // Get all users with email
+    const users = await getAllUsers();
+    const usersWithEmail = users.filter(user => user.email && user.email.trim() !== '');
+    
+    if (excludeAdmins) {
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      usersWithEmail = usersWithEmail.filter(user => !adminIds.includes(user.chat_id));
+    }
+    
+    console.log(`Found ${usersWithEmail.length} users with email addresses`);
+    
+    let successCount = 0;
+    let failCount = 0;
+    
+    // Send emails with rate limiting (3 per second to avoid overloading)
+    for (const user of usersWithEmail) {
+      try {
+        await sendEmail(
+          user.email,
+          subject,
+          `Dear ${user.name},\n\n${message}\n\nBest regards,\nStarlife Advert Team`
+        );
+        
+        successCount++;
+        console.log(`✅ Email sent to ${user.email} (${successCount}/${usersWithEmail.length})`);
+        
+        // Rate limiting: wait 300ms between emails to be gentle on Brevo
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+      } catch (error) {
+        failCount++;
+        console.error(`❌ Failed to send email to ${user.email}:`, error.message);
+        
+        // Wait a bit longer if there's an error
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    console.log(`📧 Email broadcast completed! Success: ${successCount}, Failed: ${failCount}`);
+    
+    return {
+      total: usersWithEmail.length,
+      success: successCount,
+      failed: failCount
+    };
+    
+  } catch (error) {
+    console.error('Error in sendBroadcastEmailToAll:', error.message);
+    throw error;
+  }
+}
+
+// Helper function to send batch emails (for large lists)
+async function sendBatchBroadcastEmails(subject, message, batchSize = 50) {
+  try {
+    const users = await getAllUsers();
+    const usersWithEmail = users.filter(user => user.email && user.email.trim() !== '');
+    
+    console.log(`Total users with email: ${usersWithEmail.length}`);
+    console.log(`Sending in batches of ${batchSize} to respect 300/day limit`);
+    
+    let totalSent = 0;
+    const results = [];
+    
+    for (let i = 0; i < usersWithEmail.length; i += batchSize) {
+      const batch = usersWithEmail.slice(i, i + batchSize);
+      
+      console.log(`📦 Processing batch ${Math.floor(i/batchSize) + 1} (${batch.length} users)`);
+      
+      let batchSuccess = 0;
+      let batchFail = 0;
+      
+      for (const user of batch) {
+        try {
+          await sendEmail(
+            user.email,
+            subject,
+            `Dear ${user.name},\n\n${message}\n\nBest regards,\nStarlife Advert Team`
+          );
+          
+          batchSuccess++;
+          totalSent++;
+          
+          // Rate limiting
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+        } catch (error) {
+          batchFail++;
+          console.error(`Failed for ${user.email}:`, error.message);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      results.push({
+        batch: Math.floor(i/batchSize) + 1,
+        success: batchSuccess,
+        failed: batchFail
+      });
+      
+      console.log(`Batch ${Math.floor(i/batchSize) + 1} complete: ${batchSuccess} sent, ${batchFail} failed`);
+      
+      // If we've sent 300 emails today, stop (respecting daily limit)
+      if (totalSent >= 280) { // Stop at 280 to be safe
+        console.log(`⚠️ Reached daily email limit (280/300). Stopping.`);
+        break;
+      }
+      
+      // Wait 10 seconds between batches
+      if (i + batchSize < usersWithEmail.length) {
+        console.log(`⏳ Waiting 10 seconds before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      }
+    }
+    
+    return {
+      totalUsers: usersWithEmail.length,
+      totalSent: totalSent,
+      batches: results
+    };
+    
+  } catch (error) {
+    console.error('Error in sendBatchBroadcastEmails:', error.message);
+    throw error;
+  }
+}
+
+// ==================== END OF BROADCAST EMAIL HELPER ====================
+
+// ==================== SCHEDULED EMAIL BROADCAST SYSTEM ====================
+
+// Store scheduled broadcasts
+const scheduledBroadcasts = new Map();
+
+// Schedule a broadcast email
+function scheduleBroadcastEmail(name, subject, message, scheduleTime, recurring = false) {
+  const now = new Date();
+  const scheduledTime = new Date(scheduleTime);
+  
+  if (scheduledTime <= now) {
+    console.log('Scheduled time must be in the future');
+    return false;
+  }
+  
+  const timeUntil = scheduledTime.getTime() - now.getTime();
+  
+  console.log(`⏰ Scheduling broadcast "${name}" for ${scheduledTime.toLocaleString()}`);
+  
+  const timeoutId = setTimeout(async () => {
+    console.log(`⏰ Executing scheduled broadcast: ${name}`);
+    
+    try {
+      const result = await sendBroadcastEmailToAll(subject, message);
+      console.log(`✅ Scheduled broadcast "${name}" completed: ${result.success} emails sent`);
+      
+      // Store broadcast history
+      await storeBroadcastHistory(name, subject, message, result);
+      
+      // If recurring, schedule again for next day
+      if (recurring) {
+        const nextDay = new Date(scheduledTime);
+        nextDay.setDate(nextDay.getDate() + 1);
+        scheduleBroadcastEmail(name, subject, message, nextDay, true);
+      }
+    } catch (error) {
+      console.error(`❌ Scheduled broadcast "${name}" failed:`, error.message);
+    }
+  }, timeUntil);
+  
+  scheduledBroadcasts.set(name, {
+    id: timeoutId,
+    name: name,
+    subject: subject,
+    message: message,
+    scheduledTime: scheduledTime,
+    recurring: recurring
+  });
+  
+  return true;
+}
+
+// Cancel scheduled broadcast
+function cancelScheduledBroadcast(name) {
+  const broadcast = scheduledBroadcasts.get(name);
+  if (broadcast) {
+    clearTimeout(broadcast.id);
+    scheduledBroadcasts.delete(name);
+    console.log(`❌ Cancelled scheduled broadcast: ${name}`);
+    return true;
+  }
+  return false;
+}
+
+// List scheduled broadcasts
+function listScheduledBroadcasts() {
+  const broadcasts = [];
+  for (const [name, broadcast] of scheduledBroadcasts) {
+    broadcasts.push({
+      name: broadcast.name,
+      subject: broadcast.subject,
+      scheduledTime: broadcast.scheduledTime,
+      recurring: broadcast.recurring
+    });
+  }
+  return broadcasts;
+}
+
+// Store broadcast history in database
+async function storeBroadcastHistory(name, subject, message, result) {
+  try {
+    const broadcastId = `BRC-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO broadcast_history (
+        broadcast_id, name, subject, message, scheduled_time, 
+        execution_time, total_users, emails_sent, emails_failed
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        broadcastId,
+        name,
+        subject,
+        message,
+        new Date(),
+        new Date(),
+        result.totalUsers || result.total,
+        result.totalSent || result.success,
+        result.failed || 0
+      ]
+    );
+    return true;
+  } catch (error) {
+    console.error('Error storing broadcast history:', error.message);
+    return false;
+  }
+}
+
+// Initialize broadcast history table
+async function initBroadcastTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS broadcast_history (
+        id SERIAL PRIMARY KEY,
+        broadcast_id VARCHAR(100) UNIQUE NOT NULL,
+        name VARCHAR(200) NOT NULL,
+        subject VARCHAR(500) NOT NULL,
+        message TEXT NOT NULL,
+        scheduled_time TIMESTAMP NOT NULL,
+        execution_time TIMESTAMP NOT NULL,
+        total_users INTEGER DEFAULT 0,
+        emails_sent INTEGER DEFAULT 0,
+        emails_failed INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    console.log('✅ Broadcast history table ready');
+  } catch (error) {
+    console.error('Error creating broadcast table:', error.message);
+  }
+}
+
+// ==================== END OF SCHEDULED EMAIL BROADCAST SYSTEM ====================
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -555,6 +823,8 @@ async function initDatabase() {
     }
     
     console.log('✅ Database tables initialized successfully');
+// Initialize broadcast table
+await initBroadcastTable();
   } catch (error) {
     console.error('❌ Database initialization error:', error.message);
     throw error;
@@ -4242,7 +4512,46 @@ bot.on('message', async (msg) => {
         }
       }
     }
+    // Handle broadcast confirmation
+else if (session && session.step === 'confirm_broadcast') {
+  if (text.toUpperCase() === 'CONFIRM') {
+    await bot.sendMessage(chatId, '📧 Sending broadcast emails to all users...');
     
+    try {
+      const result = await sendBroadcastEmailToAll(
+        session.data.subject,
+        session.data.message
+      );
+      
+      delete adminSessions[chatId];
+      
+      await bot.sendMessage(chatId,
+        `✅ **Email Broadcast Complete!**\n\n` +
+        `Total users with email: ${result.total}\n` +
+        `Emails sent successfully: ${result.success}\n` +
+        `Emails failed: ${result.failed}\n\n` +
+        `The broadcast has been sent to all registered users.`
+      );
+      
+      // Store broadcast history
+      await storeBroadcastHistory(
+        'Manual Broadcast',
+        session.data.subject,
+        session.data.message,
+        result
+      );
+      
+    } catch (error) {
+      await bot.sendMessage(chatId, `❌ Broadcast failed: ${error.message}`);
+      delete adminSessions[chatId];
+    }
+  } else if (text.toUpperCase() === 'CANCEL') {
+    delete adminSessions[chatId];
+    await bot.sendMessage(chatId, '❌ Broadcast cancelled.');
+  } else {
+    await bot.sendMessage(chatId, 'Please type CONFIRM to send or CANCEL to abort.');
+  }
+}
   } catch (error) {
     console.log('Message handling error:', error.message);
     await bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
@@ -6350,6 +6659,252 @@ bot.onText(/\/testemail/, async (msg) => {
   } catch (error) {
     console.error(error);
     await bot.sendMessage(chatId, '❌ Email failed: ' + error.message);
+  }
+});
+// Email broadcast commands
+bot.onText(/\/broadcastemail (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  // Parse command: /broadcastemail subject|message
+  const parts = match[1].split('|');
+  if (parts.length < 2) {
+    await bot.sendMessage(chatId,
+      `❌ **Invalid Format**\n\n` +
+      `Use: /broadcastemail subject|message\n` +
+      `Example: /broadcastemail New Investment Opportunity|We have exciting news about our new investment plans...`
+    );
+    return;
+  }
+  
+  const subject = parts[0].trim();
+  const message = parts.slice(1).join('|').trim();
+  
+  await bot.sendMessage(chatId,
+    `📧 **Confirm Email Broadcast**\n\n` +
+    `**Subject:** ${subject}\n\n` +
+    `**Message:**\n${message}\n\n` +
+    `This will send email to ALL registered users.\n\n` +
+    `Send CONFIRM to proceed or CANCEL to abort.`
+  );
+  
+  adminSessions[chatId] = {
+    step: 'confirm_broadcast',
+    data: {
+      subject: subject,
+      message: message
+    }
+  };
+});
+
+// Schedule broadcast email
+bot.onText(/\/schedulebroadcast (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  // Parse: /schedulebroadcast name|YYYY-MM-DD HH:MM|subject|message
+  const parts = match[1].split('|');
+  if (parts.length < 4) {
+    await bot.sendMessage(chatId,
+      `❌ **Invalid Format**\n\n` +
+      `Use: /schedulebroadcast name|datetime|subject|message\n\n` +
+      `**Example:**\n` +
+      `/schedulebroadcast Welcome Message|2024-12-25 09:00|Welcome to Starlife|Dear investor, welcome to our platform...\n\n` +
+      `**Recurring daily:** Add "recurring" at the end:\n` +
+      `/schedulebroadcast Daily Update|2024-12-25 09:00|Daily News|Today's update...|recurring`
+    );
+    return;
+  }
+  
+  const name = parts[0].trim();
+  const datetimeStr = parts[1].trim();
+  const subject = parts[2].trim();
+  const message = parts.slice(3).join('|').trim();
+  const isRecurring = message.toLowerCase().includes('recurring');
+  
+  // Clean message if it has recurring flag
+  const cleanMessage = isRecurring ? 
+    message.replace(/recurring/gi, '').trim() : message;
+  
+  const scheduledTime = new Date(datetimeStr);
+  
+  if (isNaN(scheduledTime.getTime())) {
+    await bot.sendMessage(chatId, '❌ Invalid date format. Use: YYYY-MM-DD HH:MM');
+    return;
+  }
+  
+  const success = scheduleBroadcastEmail(name, subject, cleanMessage, scheduledTime, isRecurring);
+  
+  if (success) {
+    await bot.sendMessage(chatId,
+      `✅ **Broadcast Scheduled Successfully**\n\n` +
+      `**Name:** ${name}\n` +
+      `**Time:** ${scheduledTime.toLocaleString()}\n` +
+      `**Recurring:** ${isRecurring ? 'Yes (Daily)' : 'No'}\n` +
+      `**Subject:** ${subject}\n\n` +
+      `Email will be sent automatically at the scheduled time.`
+    );
+  } else {
+    await bot.sendMessage(chatId, '❌ Failed to schedule broadcast. Time must be in the future.');
+  }
+});
+
+// List scheduled broadcasts
+bot.onText(/\/listscheduled/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  const broadcasts = listScheduledBroadcasts();
+  
+  if (broadcasts.length === 0) {
+    await bot.sendMessage(chatId, '📭 No scheduled broadcasts.');
+    return;
+  }
+  
+  let message = `⏰ **Scheduled Email Broadcasts**\n\n`;
+  
+  broadcasts.forEach((broadcast, index) => {
+    message += `${index + 1}. **${broadcast.name}**\n`;
+    message += `   Time: ${broadcast.scheduledTime.toLocaleString()}\n`;
+    message += `   Recurring: ${broadcast.recurring ? '✅ Yes' : '❌ No'}\n`;
+    message += `   Subject: ${broadcast.subject}\n\n`;
+  });
+  
+  message += `**Cancel a broadcast:** /cancelbroadcast name`;
+  
+  await bot.sendMessage(chatId, message);
+});
+
+// Cancel scheduled broadcast
+bot.onText(/\/cancelbroadcast (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  const name = match[1].trim();
+  const success = cancelScheduledBroadcast(name);
+  
+  if (success) {
+    await bot.sendMessage(chatId, `✅ Cancelled broadcast: "${name}"`);
+  } else {
+    await bot.sendMessage(chatId, `❌ No broadcast found with name: "${name}"`);
+  }
+});
+
+// Send test broadcast to yourself
+bot.onText(/\/testbroadcast (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  const parts = match[1].split('|');
+  if (parts.length < 2) {
+    await bot.sendMessage(chatId, 'Use: /testbroadcast subject|message');
+    return;
+  }
+  
+  const subject = parts[0].trim();
+  const message = parts.slice(1).join('|').trim();
+  
+  // Send test to admin only
+  const user = await getUserByChatId(chatId);
+  
+  if (user && user.email) {
+    try {
+      await sendEmail(
+        user.email,
+        subject,
+        `Dear ${user.name},\n\n${message}\n\nBest regards,\nStarlife Advert Team`
+      );
+      
+      await bot.sendMessage(chatId,
+        `✅ **Test Email Sent**\n\n` +
+        `Sent to: ${user.email}\n` +
+        `Subject: ${subject}\n\n` +
+        `Check your inbox!`
+      );
+    } catch (error) {
+      await bot.sendMessage(chatId, `❌ Failed to send test email: ${error.message}`);
+    }
+  } else {
+    await bot.sendMessage(chatId, '❌ You need to have an email registered to test.');
+  }
+});
+
+// Send batch broadcast (respects 300/day limit)
+bot.onText(/\/batchbroadcast (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  const parts = match[1].split('|');
+  if (parts.length < 2) {
+    await bot.sendMessage(chatId,
+      `❌ **Invalid Format**\n\n` +
+      `Use: /batchbroadcast subject|message\n` +
+      `Example: /batchbroadcast Important Update|We're upgrading our systems...\n\n` +
+      `This sends emails in batches of 50 to respect 300/day limit.`
+    );
+    return;
+  }
+  
+  const subject = parts[0].trim();
+  const message = parts.slice(1).join('|').trim();
+  
+  await bot.sendMessage(chatId,
+    `📧 **Starting Batch Broadcast**\n\n` +
+    `**Subject:** ${subject}\n\n` +
+    `**Message:** ${message.substring(0, 100)}...\n\n` +
+    `Sending in batches of 50 emails...\n` +
+    `Please wait, this may take several minutes.`
+  );
+  
+  try {
+    const result = await sendBatchBroadcastEmails(subject, message, 50);
+    
+    let report = `✅ **Batch Broadcast Complete**\n\n`;
+    report += `Total Users with Email: ${result.totalUsers}\n`;
+    report += `Total Emails Sent: ${result.totalSent}\n\n`;
+    
+    result.batches.forEach((batch, index) => {
+      report += `Batch ${index + 1}: ${batch.success} sent, ${batch.failed} failed\n`;
+    });
+    
+    report += `\n**Note:** Stopped at ${result.totalSent} emails to respect 300/day limit.`;
+    
+    await bot.sendMessage(chatId, report);
+    
+    // Store broadcast history
+    await storeBroadcastHistory(
+      'Batch Broadcast',
+      subject,
+      message,
+      { totalUsers: result.totalUsers, success: result.totalSent, failed: 0 }
+    );
+    
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Batch broadcast failed: ${error.message}`);
   }
 });
 
