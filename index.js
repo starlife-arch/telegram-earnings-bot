@@ -825,6 +825,8 @@ async function initDatabase() {
     console.log('✅ Database tables initialized successfully');
 // Initialize broadcast table
 await initBroadcastTable();
+// Initialize daily profit table
+await initDailyProfitTable();    
   } catch (error) {
     console.error('❌ Database initialization error:', error.message);
     throw error;
@@ -1934,49 +1936,157 @@ const loggedOutUsers = new Set();
 // Admin sessions for messaging users
 const adminSessions = {};
 
-// Daily profit scheduler
-function scheduleDailyProfits() {
-  setInterval(async () => {
-    try {
-      const activeInvestments = await getAllActiveInvestments();
-      
-      for (const investment of activeInvestments) {
+// ==================== DAILY PROFIT CALCULATION SYSTEM ====================
+
+// Fixed daily profit calculation function
+async function calculateDailyProfits() {
+  try {
+    console.log(`🔄 Starting daily profit calculation at ${new Date().toISOString()}`);
+    
+    const activeInvestments = await getAllActiveInvestments();
+    console.log(`Found ${activeInvestments.length} active investments to process`);
+    
+    let processedCount = 0;
+    let errorCount = 0;
+    
+    for (const investment of activeInvestments) {
+      try {
+        // Calculate daily profit (2%)
         const dailyProfit = calculateDailyProfit(investment.amount);
+        console.log(`Processing investment ${investment.investment_id}: ${investment.amount} -> ${dailyProfit}`);
         
         const user = await getUserByMemberId(investment.member_id);
-        if (user) {
-          const newBalance = parseFloat(user.balance || 0) + dailyProfit;
-          const newTotalEarned = parseFloat(user.total_earned || 0) + dailyProfit;
-          
-          await updateUser(investment.member_id, {
-            balance: newBalance,
-            total_earned: newTotalEarned
-          });
-          
-          await createTransaction({
-            id: `TRX-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-            memberId: investment.member_id,
-            type: 'daily_profit',
-            amount: dailyProfit,
-            description: `Daily profit from investment #${investment.investment_id}`,
-            investmentId: investment.investment_id
-          });
+        if (!user) {
+          console.log(`User ${investment.member_id} not found for investment ${investment.investment_id}`);
+          continue;
         }
         
+        // Update user balance and total earned
+        const newBalance = parseFloat(user.balance || 0) + dailyProfit;
+        const newTotalEarned = parseFloat(user.total_earned || 0) + dailyProfit;
+        
+        await updateUser(investment.member_id, {
+          balance: newBalance,
+          total_earned: newTotalEarned
+        });
+        
+        // Create transaction record
+        await createTransaction({
+          id: `PROFIT-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          memberId: investment.member_id,
+          type: 'daily_profit',
+          amount: dailyProfit,
+          description: `Daily profit from investment #${investment.investment_id}`,
+          investmentId: investment.investment_id
+        });
+        
+        // Update investment stats
         const newTotalProfit = parseFloat(investment.total_profit || 0) + dailyProfit;
         const newDaysActive = (investment.days_active || 0) + 1;
         
         await updateInvestment(investment.investment_id, {
           total_profit: newTotalProfit,
-          days_active: newDaysActive
+          days_active: newDaysActive,
+          updated_at: new Date()
         });
+        
+        processedCount++;
+        
+        // Log success
+        console.log(`✅ Added ${dailyProfit} profit to ${investment.member_id} from investment ${investment.investment_id}`);
+        
+      } catch (investmentError) {
+        errorCount++;
+        console.error(`❌ Error processing investment ${investment.investment_id}:`, investmentError.message);
       }
-      
-      console.log('✅ Daily profits calculated for', activeInvestments.length, 'investments');
-    } catch (error) {
-      console.log('❌ Error calculating daily profits:', error.message);
     }
-  }, 24 * 60 * 60 * 1000);
+    
+    console.log(`✅ Daily profits calculation completed! Processed: ${processedCount}, Errors: ${errorCount}`);
+    
+    // Log to file or database for tracking
+    await logDailyProfitRun(processedCount, errorCount);
+    
+    return {
+      processed: processedCount,
+      errors: errorCount,
+      timestamp: new Date()
+    };
+    
+  } catch (error) {
+    console.error('❌ Error in calculateDailyProfits:', error.message);
+    throw error;
+  }
+}
+
+// Log daily profit run to database
+async function logDailyProfitRun(processed, errors) {
+  try {
+    await pool.query(
+      `INSERT INTO daily_profit_runs (processed_count, error_count, run_date) 
+       VALUES ($1, $2, $3)`,
+      [processed, errors, new Date()]
+    );
+  } catch (error) {
+    console.error('Error logging profit run:', error.message);
+  }
+}
+
+// Initialize daily profit runs table
+async function initDailyProfitTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS daily_profit_runs (
+        id SERIAL PRIMARY KEY,
+        processed_count INTEGER DEFAULT 0,
+        error_count INTEGER DEFAULT 0,
+        run_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✅ Daily profit runs table ready');
+  } catch (error) {
+    console.error('Error creating daily profit table:', error.message);
+  }
+}
+
+// Schedule daily profits to run at midnight UTC
+function scheduleDailyProfits() {
+  console.log('🔄 Setting up daily profit scheduler...');
+  
+  // Calculate time until next midnight UTC
+  const now = new Date();
+  const midnightUTC = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1, // Tomorrow
+    0, 0, 0, 0 // Midnight
+  ));
+  
+  const msUntilMidnight = midnightUTC.getTime() - now.getTime();
+  
+  console.log(`Next daily profit calculation at: ${midnightUTC.toISOString()}`);
+  console.log(`Time until next run: ${Math.floor(msUntilMidnight / 1000 / 60 / 60)} hours ${Math.floor((msUntilMidnight / 1000 / 60) % 60)} minutes`);
+  
+  // Run at midnight, then every 24 hours
+  setTimeout(() => {
+    console.log('⏰ Running first daily profit calculation...');
+    calculateDailyProfits();
+    
+    // Schedule recurring every 24 hours
+    setInterval(async () => {
+      console.log('⏰ Running scheduled daily profit calculation...');
+      await calculateDailyProfits();
+    }, 24 * 60 * 60 * 1000); // 24 hours
+    
+  }, msUntilMidnight);
+  
+  // Run immediately on startup for testing (optional - remove in production)
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('🧪 Running test profit calculation (development mode)...');
+    setTimeout(async () => {
+      await calculateDailyProfits();
+    }, 5000); // Run after 5 seconds for testing
+  }
 }
 
 // ==================== MEDIA HANDLERS ====================
@@ -5557,6 +5667,186 @@ bot.onText(/\/cancel/, async (msg) => {
   }
 });
 
+// Admin command to manually trigger profit calculation
+bot.onText(/\/calculateprofits/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  await bot.sendMessage(chatId, '🔄 Manually calculating daily profits...');
+  
+  try {
+    const result = await calculateDailyProfits();
+    
+    await bot.sendMessage(chatId,
+      `✅ **Manual Profit Calculation Complete**\n\n` +
+      `Processed investments: ${result.processed}\n` +
+      `Errors: ${result.errors}\n` +
+      `Timestamp: ${result.timestamp.toLocaleString()}\n\n` +
+      `Profits have been added to all active investments.`
+    );
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Error calculating profits: ${error.message}`);
+  }
+});
+
+// Admin command to check profit calculation status
+bot.onText(/\/profitstatus/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    // Get active investments stats
+    const activeInvestments = await getAllActiveInvestments();
+    const totalInvestmentAmount = activeInvestments.reduce((sum, inv) => sum + parseFloat(inv.amount || 0), 0);
+    const totalDailyProfit = calculateDailyProfit(totalInvestmentAmount);
+    
+    // Get last profit run
+    let lastRun = null;
+    try {
+      const result = await pool.query(
+        'SELECT * FROM daily_profit_runs ORDER BY run_date DESC LIMIT 1'
+      );
+      lastRun = result.rows[0];
+    } catch (error) {
+      console.log('Could not get last run:', error.message);
+    }
+    
+    // Get users who will receive profits
+    const users = await getAllUsers();
+    const usersWithInvestments = users.filter(user => {
+      return activeInvestments.some(inv => inv.member_id === user.member_id);
+    });
+    
+    let message = `📊 **Profit Calculation Status**\n\n`;
+    message += `Active Investments: ${activeInvestments.length}\n`;
+    message += `Total Investment Amount: ${formatCurrency(totalInvestmentAmount)}\n`;
+    message += `Daily Profit (2%): ${formatCurrency(totalDailyProfit)}\n`;
+    message += `Users Receiving Profits: ${usersWithInvestments.length}\n\n`;
+    
+    if (lastRun) {
+      const lastRunTime = new Date(lastRun.run_date);
+      const timeSince = Math.floor((new Date() - lastRunTime) / 1000 / 60 / 60); // hours
+      message += `**Last Run:**\n`;
+      message += `Date: ${lastRunTime.toLocaleString()}\n`;
+      message += `Processed: ${lastRun.processed_count}\n`;
+      message += `Errors: ${lastRun.error_count}\n`;
+      message += `Hours since last run: ${timeSince}\n\n`;
+    } else {
+      message += `No previous profit runs recorded.\n\n`;
+    }
+    
+    // Show next 5 investments to process
+    if (activeInvestments.length > 0) {
+      message += `**Next 5 Investments to Process:**\n`;
+      activeInvestments.slice(0, 5).forEach((inv, index) => {
+        const dailyProfit = calculateDailyProfit(inv.amount);
+        message += `${index + 1}. ${inv.member_id}: ${formatCurrency(inv.amount)} → ${formatCurrency(dailyProfit)} daily\n`;
+      });
+      if (activeInvestments.length > 5) {
+        message += `... and ${activeInvestments.length - 5} more\n\n`;
+      }
+    }
+    
+    message += `**Commands:**\n`;
+    message += `/calculateprofits - Manually calculate profits\n`;
+    message += `/forceprofit USER_ID - Force profit for specific user\n`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Error getting profit status: ${error.message}`);
+  }
+});
+
+// Force profit calculation for specific user
+bot.onText(/\/forceprofit (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const user = await getUserByMemberId(memberId);
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+    
+    const userInvestments = await getUserActiveInvestments(memberId);
+    if (userInvestments.length === 0) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} has no active investments.`);
+      return;
+    }
+    
+    let totalProfit = 0;
+    for (const investment of userInvestments) {
+      const dailyProfit = calculateDailyProfit(investment.amount);
+      totalProfit += dailyProfit;
+      
+      // Update user balance
+      const newBalance = parseFloat(user.balance || 0) + dailyProfit;
+      const newTotalEarned = parseFloat(user.total_earned || 0) + dailyProfit;
+      
+      await updateUser(memberId, {
+        balance: newBalance,
+        total_earned: newTotalEarned
+      });
+      
+      // Update investment stats
+      const newTotalProfit = parseFloat(investment.total_profit || 0) + dailyProfit;
+      const newDaysActive = (investment.days_active || 0) + 1;
+      
+      await updateInvestment(investment.investment_id, {
+        total_profit: newTotalProfit,
+        days_active: newDaysActive,
+        updated_at: new Date()
+      });
+      
+      // Record transaction
+      await createTransaction({
+        id: `FORCE-PROFIT-${Date.now()}`,
+        memberId: memberId,
+        type: 'daily_profit',
+        amount: dailyProfit,
+        description: `Forced daily profit from investment #${investment.investment_id}`,
+        investmentId: investment.investment_id,
+        adminId: chatId.toString()
+      });
+    }
+    
+    await bot.sendMessage(chatId,
+      `✅ **Forced Profit Calculation Complete**\n\n` +
+      `User: ${user.name} (${memberId})\n` +
+      `Active Investments: ${userInvestments.length}\n` +
+      `Total Profit Added: ${formatCurrency(totalProfit)}\n` +
+      `New Balance: ${formatCurrency(parseFloat(user.balance || 0) + totalProfit)}\n\n` +
+      `User has been notified.`
+    );
+    
+    // Notify user
+    await sendUserNotification(memberId,
+      `💰 **Admin Added Daily Profit**\n\n` +
+      `An administrator has added your daily profit manually.\n\n` +
+      `Total Profit Added: ${formatCurrency(totalProfit)}\n` +
+      `New Balance: ${formatCurrency(parseFloat(user.balance || 0) + totalProfit)}\n\n` +
+      `This was added by an administrator.`
+    );
+    
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Error forcing profit: ${error.message}`);
+  }
+});
+
 // ==================== INVESTMENT ADMIN COMMANDS ====================
 
 // List all investments
@@ -6979,3 +7269,4 @@ console.log('   - Withdrawal approvals/rejections');
 console.log('   - Account suspensions/unsuspensions');
 console.log('   - Password resets/changes');
 console.log('✅ Use /testemail to test email functionality');
+
