@@ -53,7 +53,7 @@ async function sendEmailNotification(memberId, subject, templateName, data = {})
                `• M-Pesa Till: 6034186\n` +
                `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-               `• PayPal: dave@starlifeadvert.com\n` +
+               `• PayPal: starlife.payment@starlifeadvert.com\n` +
                `Name: Starlife Advert US Agency\n\n` +
                `📈 **Start Earning:**\n` +
                `1. Use /invest to make your first investment\n` +
@@ -2356,7 +2356,7 @@ bot.onText(/\/start/, async (msg) => {
                             `• M-Pesa Till: 6034186\n` +
                             `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                             `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-                            `• PayPal: dave@starlifeadvert.com\n` +
+                            `• PayPal: starlife.payment@starlifeadvert.com\n` +
                             `Name: Starlife Advert US Agency`;
       
       await bot.sendMessage(chatId, welcomeMessage);
@@ -2385,7 +2385,7 @@ bot.onText(/\/start/, async (msg) => {
   fakeMessage += '• M-Pesa Till: 6034186\n';
   fakeMessage += '• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n';
   fakeMessage += '• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n';
-  fakeMessage += '• PayPal: dave@starlifeadvert.com\n';
+  fakeMessage += '• PayPal: starlife.payment@starlifeadvert.com\n';
   fakeMessage += 'Name: Starlife Advert US Agency';
   
   await bot.sendMessage(chatId, fakeMessage);
@@ -2478,7 +2478,7 @@ bot.onText(/\/help/, async (msg) => {
   helpMessage += `• M-Pesa Till: 6034186\n`;
   helpMessage += `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n`;
   helpMessage += `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n`;
-  helpMessage += `• PayPal: dave@starlifeadvert.com\n`;
+  helpMessage += `• PayPal: starlife.payment@starlifeadvert.com\n`;
   helpMessage += `Name: Starlife Advert US Agency\n\n`;
   helpMessage += `**❓ Need Help?**\n`;
   helpMessage += `Use /support for immediate assistance`;
@@ -2578,7 +2578,7 @@ bot.onText(/\/investnow/, async (msg) => {
                       `Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
                       `📌 Send only USDT (TRC20)\n\n` +
                       `💳 **PayPal:**\n` +
-                      `Email: dave@starlifeadvert.com\n\n` +
+                      `Email: starlife.payment@starlifeadvert.com\n\n` +
                       `**Step 3: Invest**\n` +
                       `Use /invest to start investment\n` +
                       `Minimum: $10 | Maximum: $800,000\n` +
@@ -2659,7 +2659,7 @@ bot.onText(/\/invest/, async (msg) => {
     `   Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
     `   📌 Send only USDT (TRC20)\n\n` +
     `4️⃣ **PayPal**\n` +
-    `   Email: dave@starlifeadvert.com\n\n` +
+    `   Email: starlife.payment@starlifeadvert.com\n\n` +
     `**Investment Details:**\n` +
     `Minimum Investment: $10\n` +
     `Maximum Investment: $800,000\n` +
@@ -3766,7 +3766,7 @@ bot.on('message', async (msg) => {
                        `• M-Pesa Till: 6034186\n` +
                        `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
                        `• USDT TRON (TRC20): TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
-                       `• PayPal: dave@starlifeadvert.com\n` +
+                       `• PayPal: starlife.payment@starlifeadvert.com\n` +
                        `Name: Starlife Advert US Agency\n\n` +
                        `**Quick Commands:**\n` +
                        `/invest - Make investment\n` +
@@ -3975,7 +3975,7 @@ bot.on('message', async (msg) => {
         `   Wallet: TMeEHzo9pMigvV5op88zkAQEc3ZUEfzBJ6\n` +
         `   📌 Send only USDT (TRC20)\n\n` +
         `4️⃣ **PayPal**\n` +
-        `   Email: dave@starlifeadvert.com\n\n` +
+        `   Email: starlife.payment@starlifeadvert.com\n\n` +
         `Reply with number (1-4):`
       );
     }
@@ -4017,7 +4017,7 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId,
           `✅ Payment Method: PayPal\n\n` +
           `**PayPal Email:**\n` +
-          `dave@starlifeadvert.com\n\n` +
+          `starlife.payment@starlifeadvert.com\n\n` +
           `**Important:**\n` +
           `• Send payment to the email above\n` +
           `• Include your Member ID in the payment note\n\n` +
