@@ -3673,7 +3673,7 @@ bot.on('message', async (msg) => {
         passwordHash: hashPassword(session.data.password),
         referralCode: referralCode,
         referredBy: referredBy,
-        balance: 0,
+        balance: 1,
         totalInvested: 0,
         totalEarned: 0,
         referralEarnings: 0,
@@ -3780,6 +3780,15 @@ bot.on('message', async (msg) => {
         console.log('Welcome email failed:', emailError.message);
       }
       
+      // Record welcome bonus
+      await createTransaction({
+        id: `TRX-WELCOME-${Date.now()}`,
+        memberId: memberId,
+        type: 'bonus',
+        amount: 1,
+        description: 'Welcome bonus'
+      });
+
       // Record transaction
       await createTransaction({
         id: `TRX-REG-${Date.now()}`,
@@ -7269,4 +7278,3 @@ console.log('   - Withdrawal approvals/rejections');
 console.log('   - Account suspensions/unsuspensions');
 console.log('   - Password resets/changes');
 console.log('✅ Use /testemail to test email functionality');
-
