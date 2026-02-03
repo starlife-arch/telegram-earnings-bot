@@ -5978,7 +5978,8 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
     // Update user's total invested and active investments count
     const user = await getUserByMemberId(investment.member_id);
     if (user) {
-      const newTotalInvested = parseFloat(user.total_invested || 0) + investment.amount;
+      const investmentAmount = parseFloat(investment.amount || 0);
+      const newTotalInvested = parseFloat(user.total_invested || 0) + investmentAmount;
       const newActiveInvestments = (user.active_investments || 0) + 1;
       
       await updateUser(investment.member_id, {
@@ -5990,7 +5991,7 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
       if (user.referred_by && isFirstInvestment) {
         const referrer = await getUserByReferralCode(user.referred_by);
         if (referrer) {
-          const referralBonus = calculateReferralBonus(investment.amount);
+          const referralBonus = calculateReferralBonus(investmentAmount);
           
           // Update referrer's balance and referral earnings
           const newReferrerBalance = parseFloat(referrer.balance || 0) + referralBonus;
@@ -6014,7 +6015,7 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
                 status: 'paid',
                 bonus_amount: referralBonus,
                 bonus_paid: true,
-                investment_amount: investment.amount,
+                investment_amount: investmentAmount,
                 paid_at: new Date(),
                 is_first_investment: false
               });
