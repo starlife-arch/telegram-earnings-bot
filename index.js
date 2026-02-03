@@ -1357,6 +1357,20 @@ async function getMediaFilesByChat(chatId) {
   }
 }
 
+// Get media files by investment ID
+async function getMediaFilesByInvestmentId(investmentId) {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM media_files WHERE investment_id = $1 ORDER BY timestamp DESC',
+      [investmentId]
+    );
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting media files by investment:', error.message);
+    return [];
+  }
+}
+
 // Create earnings view
 async function createEarningsView(viewData) {
   try {
@@ -6201,7 +6215,7 @@ bot.onText(/\/rejectinvestment (.+)/, async (msg, match) => {
 });
 
 // View payment proof
-bot.onText(/\/viewproof (.+)/, async (msg, match) => {
+bot.onText(/\/vi+ewproof (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const investmentId = match[1];
   
@@ -6229,8 +6243,8 @@ bot.onText(/\/viewproof (.+)/, async (msg, match) => {
     }
     
     // Get proof media
-    const mediaFiles = await getMediaFilesByChat(investmentId);
-    const proof = mediaFiles.find(m => m.investment_id === investmentId);
+    const mediaFiles = await getMediaFilesByInvestmentId(investmentId);
+    const proof = mediaFiles[0];
     
     if (!proof) {
       await bot.sendMessage(chatId, `❌ No proof found for investment ${investmentId}.`);
@@ -6442,8 +6456,9 @@ bot.onText(/\/deductinv (.+?) (.+)/, async (msg, match) => {
     for (let investment of userInvestments.reverse()) {
       if (remaining <= 0) break;
       
-      const deductAmount = Math.min(investment.amount, remaining);
-      const newAmount = investment.amount - deductAmount;
+      const investmentAmount = parseFloat(investment.amount || 0);
+      const deductAmount = Math.min(investmentAmount, remaining);
+      const newAmount = investmentAmount - deductAmount;
       remaining -= deductAmount;
       
       // Update investment
@@ -6826,7 +6841,7 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
     // Refund amount to user balance
     const user = await getUserByMemberId(withdrawal.member_id);
     if (user) {
-      const newBalance = parseFloat(user.balance || 0) + withdrawal.amount;
+      const newBalance = parseFloat(user.balance || 0) + parseFloat(withdrawal.amount || 0);
       await updateUser(withdrawal.member_id, { balance: newBalance });
     }
     
