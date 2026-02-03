@@ -47,6 +47,8 @@ async function sendEmailNotification(memberId, subject, templateName, data = {})
                `Password: ${data.password}\n` +
                `Referral Code: ${data.referralCode}\n` +
                `Join Date: ${new Date(data.joinDate).toLocaleDateString()}\n\n` +
+               `💵 **Welcome Bonus:**\n` +
+               `$1.00 has been added to your account balance.\n\n` +
                `💰 **Payment Methods:**\n` +
                `• M-Pesa Till: 6034186\n` +
                `• USDT Tether (BEP20): 0xa95bd74fae59521e8405e14b54b0d07795643812\n` +
@@ -3731,7 +3733,9 @@ bot.on('message', async (msg) => {
         welcomeMessage += `Referred By: ${referredBy}\n`;
       }
       
-      welcomeMessage += `\n**IMPORTANT SECURITY:**\n` +
+      welcomeMessage += `\n**Welcome Bonus:**\n` +
+                       `$1.00 has been added to your account balance.\n\n` +
+                       `**IMPORTANT SECURITY:**\n` +
                        `This Telegram account is now PERMANENTLY linked to Member ID: ${memberId}\n` +
                        `You cannot login to any other account with this Telegram account.\n\n` +
                        `**Save your Member ID and Password!**\n` +
