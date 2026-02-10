@@ -903,6 +903,23 @@ async function initDatabase() {
     `);
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_daily_runs (
+        id SERIAL PRIMARY KEY,
+        run_date DATE UNIQUE NOT NULL,
+        cycle_pool_usd DECIMAL(15,2) NOT NULL,
+        daily_pool_usd DECIMAL(15,2) NOT NULL,
+        cycle_days INTEGER NOT NULL,
+        weighted_total DECIMAL(18,6) NOT NULL,
+        shareholder_count INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_sh_daily_runs_run_date ON shareholder_daily_runs(run_date);
+    `);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS shareholder_withdrawal_requests (
         id SERIAL PRIMARY KEY,
         request_id VARCHAR(50) UNIQUE NOT NULL,
@@ -946,7 +963,8 @@ async function initDatabase() {
          VALUES
          ('Bronze', 100.00, '["Transport allowance"]'::jsonb),
          ('Silver', 500.00, '["Transport allowance", "Daily expenses allowance"]'::jsonb),
-         ('Gold', 1000.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance"]'::jsonb)
+         ('Gold', 1000.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance"]'::jsonb),
+         ('Platinum', 2500.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance", "Priority support"]'::jsonb)
         `
       );
     }
@@ -1714,6 +1732,23 @@ async function ensureShareholderTablesReady() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS shareholder_daily_runs (
+      id SERIAL PRIMARY KEY,
+      run_date DATE UNIQUE NOT NULL,
+      cycle_pool_usd DECIMAL(15,2) NOT NULL,
+      daily_pool_usd DECIMAL(15,2) NOT NULL,
+      cycle_days INTEGER NOT NULL,
+      weighted_total DECIMAL(18,6) NOT NULL,
+      shareholder_count INTEGER NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_sh_daily_runs_run_date ON shareholder_daily_runs(run_date);
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS shareholder_tiers (
       id SERIAL PRIMARY KEY,
       tier_name VARCHAR(100) UNIQUE NOT NULL,
@@ -1735,10 +1770,17 @@ async function ensureShareholderTablesReady() {
        VALUES
        ('Bronze', 100.00, '["Transport allowance"]'::jsonb),
        ('Silver', 500.00, '["Transport allowance", "Daily expenses allowance"]'::jsonb),
-       ('Gold', 1000.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance"]'::jsonb)
+       ('Gold', 1000.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance"]'::jsonb),
+       ('Platinum', 2500.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance", "Priority support"]'::jsonb)
       `
     );
   }
+
+  await pool.query(
+    `INSERT INTO shareholder_tiers (tier_name, min_usd, benefits_json)
+     VALUES ('Platinum', 2500.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance", "Priority support"]'::jsonb)
+     ON CONFLICT (tier_name) DO NOTHING`
+  );
 }
 
 async function getShareholderByMemberId(memberId) {
@@ -1926,6 +1968,104 @@ async function recomputeShareholderTierAndStake(shareholderId) {
 }
 
 
+function getShareholderTierMultiplier(tierName) {
+  return SHAREHOLDER_TIER_MULTIPLIERS[tierName] || 1.00;
+}
+
+function calculateShareholderCyclePoolUsd(companyProfitUsd = SHAREHOLDER_DEFAULT_COMPANY_PROFIT_USD, allocationPct = SHAREHOLDER_ALLOCATION_PCT) {
+  const profit = parseFloat(companyProfitUsd || 0);
+  const pct = parseFloat(allocationPct || 0);
+  return profit * pct;
+}
+
+async function calculateAndApplyDailyShareholderEarnings({
+  companyProfitUsd = SHAREHOLDER_DEFAULT_COMPANY_PROFIT_USD,
+  allocationPct = SHAREHOLDER_ALLOCATION_PCT,
+  cycleDays = SHAREHOLDER_CYCLE_DAYS
+} = {}) {
+  try {
+    await ensureShareholderTablesReady();
+
+    const existingRun = await pool.query('SELECT id FROM shareholder_daily_runs WHERE run_date = CURRENT_DATE LIMIT 1');
+    if (existingRun.rows[0]) {
+      console.log('ℹ️ Shareholder daily earnings already processed for today. Skipping duplicate run.');
+      return { processed: 0, totalAccruedUsd: 0, skipped: true };
+    }
+
+    const normalizedCycleDays = Number.isFinite(cycleDays) && cycleDays > 0 ? cycleDays : SHAREHOLDER_CYCLE_DAYS;
+    const cyclePoolUsd = calculateShareholderCyclePoolUsd(companyProfitUsd, allocationPct);
+    const poolDailyUsd = cyclePoolUsd / normalizedCycleDays;
+
+    const activeShareholdersRes = await pool.query(
+      `SELECT s.shareholder_id, s.tier, s.total_stake_usd, e.status AS earnings_status
+       FROM shareholders s
+       INNER JOIN shareholder_earnings e ON e.shareholder_id = s.shareholder_id
+       WHERE s.status = $1
+         AND e.status = $2
+         AND COALESCE(s.total_stake_usd, 0) > 0`,
+      [SHAREHOLDER_STATUS.ACTIVE, 'active']
+    );
+
+    const eligible = activeShareholdersRes.rows.map((row) => {
+      const stakeUsd = parseFloat(row.total_stake_usd || 0);
+      const multiplier = getShareholderTierMultiplier(row.tier);
+      const weightedStake = stakeUsd * multiplier;
+      return {
+        shareholderId: row.shareholder_id,
+        tier: row.tier || 'Bronze',
+        stakeUsd,
+        tierMultiplier: multiplier,
+        weightedStake
+      };
+    }).filter((row) => row.weightedStake > 0);
+
+    const weightedTotal = eligible.reduce((sum, row) => sum + row.weightedStake, 0);
+
+    if (!eligible.length || weightedTotal <= 0 || poolDailyUsd <= 0) {
+      console.log('ℹ️ No eligible active shareholders for daily earnings accrual.');
+      return { processed: 0, totalAccruedUsd: 0, poolDailyUsd, weightedTotal };
+    }
+
+    let processed = 0;
+    let totalAccruedUsd = 0;
+
+    for (const entry of eligible) {
+      const dailyEarning = poolDailyUsd * (entry.weightedStake / weightedTotal);
+      await pool.query(
+        `UPDATE shareholder_earnings
+         SET earnings_balance_usd = earnings_balance_usd + $2,
+             last_update = CURRENT_TIMESTAMP
+         WHERE shareholder_id = $1`,
+        [entry.shareholderId, dailyEarning]
+      );
+
+      processed += 1;
+      totalAccruedUsd += dailyEarning;
+    }
+
+    await pool.query(
+      `INSERT INTO shareholder_daily_runs (run_date, cycle_pool_usd, daily_pool_usd, cycle_days, weighted_total, shareholder_count)
+       VALUES (CURRENT_DATE, $1, $2, $3, $4, $5)
+       ON CONFLICT (run_date)
+       DO UPDATE SET
+         cycle_pool_usd = EXCLUDED.cycle_pool_usd,
+         daily_pool_usd = EXCLUDED.daily_pool_usd,
+         cycle_days = EXCLUDED.cycle_days,
+         weighted_total = EXCLUDED.weighted_total,
+         shareholder_count = EXCLUDED.shareholder_count`,
+      [cyclePoolUsd, poolDailyUsd, normalizedCycleDays, weightedTotal, processed]
+    );
+
+    console.log(`✅ Shareholder daily earnings applied. Processed: ${processed}, Daily Pool: ${poolDailyUsd.toFixed(2)}, Distributed: ${totalAccruedUsd.toFixed(2)}`);
+
+    return { processed, totalAccruedUsd, poolDailyUsd, weightedTotal };
+  } catch (error) {
+    console.error('❌ Error applying daily shareholder earnings:', error.message);
+    throw error;
+  }
+}
+
+
 // Password hashing
 function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
@@ -1989,6 +2129,15 @@ const SHAREHOLDER_REQUEST_STATUS = {
 const SHAREHOLDER_WITHDRAWAL_LOCK_MONTHS = 6;
 const SHAREHOLDER_ID_SUFFIX = process.env.SHAREHOLDER_ID_SUFFIX || 'UI';
 const SHAREHOLDER_MIN_TOPUP_USD = parseFloat(process.env.SHAREHOLDER_MIN_TOPUP_USD || '10');
+const SHAREHOLDER_DEFAULT_COMPANY_PROFIT_USD = parseFloat(process.env.SHAREHOLDER_COMPANY_PROFIT_USD || '10000000');
+const SHAREHOLDER_ALLOCATION_PCT = parseFloat(process.env.SHAREHOLDER_ALLOCATION_PCT || '0.30');
+const SHAREHOLDER_CYCLE_DAYS = parseInt(process.env.SHAREHOLDER_CYCLE_DAYS || '180', 10);
+const SHAREHOLDER_TIER_MULTIPLIERS = {
+  Bronze: 1.00,
+  Silver: 1.10,
+  Gold: 1.25,
+  Platinum: 1.50
+};
 
 function getInitials(name = '') {
   const parts = name
@@ -2502,7 +2651,9 @@ async function calculateDailyProfits() {
       }
     }
     
-    console.log(`✅ Daily profits calculation completed! Processed: ${processedCount}, Errors: ${errorCount}`);
+    const shareholderRun = await calculateAndApplyDailyShareholderEarnings();
+
+    console.log(`✅ Daily profits calculation completed! Processed: ${processedCount}, Errors: ${errorCount}, Shareholder processed: ${shareholderRun.processed}`);
     
     // Log to file or database for tracking
     await logDailyProfitRun(processedCount, errorCount);
