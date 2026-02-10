@@ -1674,8 +1674,76 @@ async function createShareholderAuditLog({ adminId, action, targetId, beforeStat
   }
 }
 
+async function ensureShareholderTablesReady() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shareholders (
+      id SERIAL PRIMARY KEY,
+      shareholder_id VARCHAR(50) UNIQUE NOT NULL,
+      member_id VARCHAR(50) UNIQUE NOT NULL,
+      activation_date TIMESTAMP,
+      status VARCHAR(20) DEFAULT 'under_review',
+      tier VARCHAR(100),
+      total_stake_usd DECIMAL(15,2) DEFAULT 0.00,
+      lock_from_last_activation BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (member_id) REFERENCES users(member_id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_shareholders_member_id ON shareholders(member_id);
+    CREATE INDEX IF NOT EXISTS idx_shareholders_shareholder_id ON shareholders(shareholder_id);
+    CREATE INDEX IF NOT EXISTS idx_shareholders_status ON shareholders(status);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shareholder_earnings (
+      id SERIAL PRIMARY KEY,
+      shareholder_id VARCHAR(50) UNIQUE NOT NULL,
+      earnings_balance_usd DECIMAL(15,2) DEFAULT 0.00,
+      status VARCHAR(20) DEFAULT 'pending_review',
+      next_payout_date TIMESTAMP,
+      last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_sh_earnings_shareholder_id ON shareholder_earnings(shareholder_id);
+    CREATE INDEX IF NOT EXISTS idx_sh_earnings_status ON shareholder_earnings(status);
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shareholder_tiers (
+      id SERIAL PRIMARY KEY,
+      tier_name VARCHAR(100) UNIQUE NOT NULL,
+      min_usd DECIMAL(15,2) NOT NULL,
+      benefits_json JSONB DEFAULT '[]',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_sh_tiers_min_usd ON shareholder_tiers(min_usd);
+  `);
+
+  const tierCount = await pool.query('SELECT COUNT(*) FROM shareholder_tiers');
+  if (parseInt(tierCount.rows[0].count, 10) === 0) {
+    await pool.query(
+      `INSERT INTO shareholder_tiers (tier_name, min_usd, benefits_json)
+       VALUES
+       ('Bronze', 100.00, '["Transport allowance"]'::jsonb),
+       ('Silver', 500.00, '["Transport allowance", "Daily expenses allowance"]'::jsonb),
+       ('Gold', 1000.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance"]'::jsonb)
+      `
+    );
+  }
+}
+
 async function getShareholderByMemberId(memberId) {
   try {
+    await ensureShareholderTablesReady();
     const result = await pool.query('SELECT * FROM shareholders WHERE member_id = $1', [memberId]);
     return result.rows[0] || null;
   } catch (error) {
@@ -1686,6 +1754,7 @@ async function getShareholderByMemberId(memberId) {
 
 async function getShareholderByShareholderId(shareholderId) {
   try {
+    await ensureShareholderTablesReady();
     const result = await pool.query('SELECT * FROM shareholders WHERE shareholder_id = $1', [shareholderId]);
     return result.rows[0] || null;
   } catch (error) {
@@ -1696,6 +1765,7 @@ async function getShareholderByShareholderId(shareholderId) {
 
 async function getShareholderTiers() {
   try {
+    await ensureShareholderTablesReady();
     const result = await pool.query('SELECT * FROM shareholder_tiers ORDER BY min_usd ASC');
     return result.rows;
   } catch (error) {
@@ -1765,7 +1835,8 @@ async function getShareholderDashboard(memberId) {
   };
 }
 
-async function createShareholderProfile(memberId, adminId, reason = 'Admin created shareholder profile') {
+async function createShareholderProfile(memberId, adminId, reason = 'Admin created shareholder profile', preferredShareholderId = null) {
+  await ensureShareholderTablesReady();
   const user = await getUserByMemberId(memberId);
   if (!user) throw new Error('User not found');
 
@@ -1776,7 +1847,14 @@ async function createShareholderProfile(memberId, adminId, reason = 'Admin creat
 
   const tiers = await getShareholderTiers();
   const baseTier = tiers[0] || { tier_name: 'Bronze' };
-  const shareholderId = await generateShareholderIdForUser(user.name);
+  let shareholderId = await generateShareholderIdForUser(user.name);
+  if (preferredShareholderId) {
+    const existingByShareholderId = await getShareholderByShareholderId(preferredShareholderId);
+    if (existingByShareholderId) {
+      throw new Error('Shareholder ID already exists');
+    }
+    shareholderId = preferredShareholderId;
+  }
 
   const result = await pool.query(
     `INSERT INTO shareholders (shareholder_id, member_id, activation_date, status, tier, total_stake_usd)
@@ -7992,9 +8070,20 @@ bot.onText(/\/sh_create (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
 
-  const memberId = match[1].trim().toUpperCase();
+  const args = match[1].trim().split(/\s+/);
+  const memberId = (args[0] || '').toUpperCase();
+  const preferredShareholderId = args[1] ? args[1].toUpperCase() : null;
+
+  if (!memberId || !/^USER-\d+$/i.test(memberId)) {
+    return bot.sendMessage(chatId, '❌ Invalid Member ID format. Use: /sh_create USER-1001 [OPTIONAL_SHA_ID]');
+  }
+
+  if (preferredShareholderId && !/^SHA-/.test(preferredShareholderId)) {
+    return bot.sendMessage(chatId, '❌ Optional Shareholder ID must start with SHA-');
+  }
+
   try {
-    const shareholder = await createShareholderProfile(memberId, chatId.toString(), 'Admin create shareholder profile');
+    const shareholder = await createShareholderProfile(memberId, chatId.toString(), 'Admin create shareholder profile', preferredShareholderId);
     await bot.sendMessage(chatId,
       `✅ Shareholder profile created.
 ` +
