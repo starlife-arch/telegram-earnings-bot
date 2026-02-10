@@ -821,6 +821,155 @@ async function initDatabase() {
       )
     `);
     
+
+    // Create shareholders table (isolated module)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholders (
+        id SERIAL PRIMARY KEY,
+        shareholder_id VARCHAR(50) UNIQUE NOT NULL,
+        member_id VARCHAR(50) UNIQUE NOT NULL,
+        activation_date TIMESTAMP,
+        status VARCHAR(20) DEFAULT 'under_review',
+        tier VARCHAR(100),
+        total_stake_usd DECIMAL(15,2) DEFAULT 0.00,
+        lock_from_last_activation BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES users(member_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_shareholders_member_id ON shareholders(member_id);
+      CREATE INDEX IF NOT EXISTS idx_shareholders_shareholder_id ON shareholders(shareholder_id);
+      CREATE INDEX IF NOT EXISTS idx_shareholders_status ON shareholders(status);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_stake_requests (
+        id SERIAL PRIMARY KEY,
+        request_id VARCHAR(50) UNIQUE NOT NULL,
+        shareholder_id VARCHAR(50) NOT NULL,
+        amount_usd DECIMAL(15,2) NOT NULL,
+        method VARCHAR(50),
+        proof_file_id VARCHAR(255),
+        proof_file_type VARCHAR(50),
+        proof_reference VARCHAR(255),
+        status VARCHAR(30) DEFAULT 'pending_proof',
+        admin_reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        decided_at TIMESTAMP,
+        decided_by VARCHAR(100)
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_sh_stake_requests_shareholder_id ON shareholder_stake_requests(shareholder_id);
+      CREATE INDEX IF NOT EXISTS idx_sh_stake_requests_status ON shareholder_stake_requests(status);
+      CREATE INDEX IF NOT EXISTS idx_sh_stake_requests_request_id ON shareholder_stake_requests(request_id);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_stake_history (
+        id SERIAL PRIMARY KEY,
+        shareholder_id VARCHAR(50) NOT NULL,
+        amount_usd DECIMAL(15,2) NOT NULL,
+        type VARCHAR(30) NOT NULL,
+        ref VARCHAR(100),
+        note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_sh_stake_history_shareholder_id ON shareholder_stake_history(shareholder_id);
+      CREATE INDEX IF NOT EXISTS idx_sh_stake_history_created_at ON shareholder_stake_history(created_at);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_earnings (
+        id SERIAL PRIMARY KEY,
+        shareholder_id VARCHAR(50) UNIQUE NOT NULL,
+        earnings_balance_usd DECIMAL(15,2) DEFAULT 0.00,
+        status VARCHAR(20) DEFAULT 'pending_review',
+        next_payout_date TIMESTAMP,
+        last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_sh_earnings_shareholder_id ON shareholder_earnings(shareholder_id);
+      CREATE INDEX IF NOT EXISTS idx_sh_earnings_status ON shareholder_earnings(status);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_withdrawal_requests (
+        id SERIAL PRIMARY KEY,
+        request_id VARCHAR(50) UNIQUE NOT NULL,
+        shareholder_id VARCHAR(50) NOT NULL,
+        amount_usd DECIMAL(15,2) NOT NULL,
+        payout_method VARCHAR(50) NOT NULL,
+        payout_details TEXT NOT NULL,
+        status VARCHAR(30) DEFAULT 'pending_admin_approval',
+        admin_reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        decided_at TIMESTAMP,
+        decided_by VARCHAR(100)
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_sh_withdrawal_requests_shareholder_id ON shareholder_withdrawal_requests(shareholder_id);
+      CREATE INDEX IF NOT EXISTS idx_sh_withdrawal_requests_status ON shareholder_withdrawal_requests(status);
+      CREATE INDEX IF NOT EXISTS idx_sh_withdrawal_requests_request_id ON shareholder_withdrawal_requests(request_id);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_tiers (
+        id SERIAL PRIMARY KEY,
+        tier_name VARCHAR(100) UNIQUE NOT NULL,
+        min_usd DECIMAL(15,2) NOT NULL,
+        benefits_json JSONB DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_sh_tiers_min_usd ON shareholder_tiers(min_usd);
+    `);
+
+    const tierCount = await client.query('SELECT COUNT(*) FROM shareholder_tiers');
+    if (parseInt(tierCount.rows[0].count, 10) === 0) {
+      await client.query(
+        `INSERT INTO shareholder_tiers (tier_name, min_usd, benefits_json)
+         VALUES
+         ('Bronze', 100.00, '["Transport allowance"]'::jsonb),
+         ('Silver', 500.00, '["Transport allowance", "Daily expenses allowance"]'::jsonb),
+         ('Gold', 1000.00, '["Transport allowance", "Daily expenses allowance", "Travel & housing allowance"]'::jsonb)
+        `
+      );
+    }
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shareholder_audit_log (
+        id SERIAL PRIMARY KEY,
+        admin_id VARCHAR(100) NOT NULL,
+        action VARCHAR(100) NOT NULL,
+        target_id VARCHAR(100) NOT NULL,
+        before_state JSONB,
+        after_state JSONB,
+        reason TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_sh_audit_admin_id ON shareholder_audit_log(admin_id);
+      CREATE INDEX IF NOT EXISTS idx_sh_audit_target_id ON shareholder_audit_log(target_id);
+      CREATE INDEX IF NOT EXISTS idx_sh_audit_timestamp ON shareholder_audit_log(timestamp);
+    `);
+
     // Create fake_members table
     await client.query(`
       CREATE TABLE IF NOT EXISTS fake_members (
@@ -1513,6 +1662,192 @@ async function getSystemStats() {
   }
 }
 
+async function createShareholderAuditLog({ adminId, action, targetId, beforeState = null, afterState = null, reason = null }) {
+  try {
+    await pool.query(
+      `INSERT INTO shareholder_audit_log (admin_id, action, target_id, before_state, after_state, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [adminId, action, targetId, beforeState ? JSON.stringify(beforeState) : null, afterState ? JSON.stringify(afterState) : null, reason]
+    );
+  } catch (error) {
+    console.error('Error creating shareholder audit log:', error.message);
+  }
+}
+
+async function getShareholderByMemberId(memberId) {
+  try {
+    const result = await pool.query('SELECT * FROM shareholders WHERE member_id = $1', [memberId]);
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error getting shareholder by member ID:', error.message);
+    return null;
+  }
+}
+
+async function getShareholderByShareholderId(shareholderId) {
+  try {
+    const result = await pool.query('SELECT * FROM shareholders WHERE shareholder_id = $1', [shareholderId]);
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error getting shareholder by shareholder ID:', error.message);
+    return null;
+  }
+}
+
+async function getShareholderTiers() {
+  try {
+    const result = await pool.query('SELECT * FROM shareholder_tiers ORDER BY min_usd ASC');
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting shareholder tiers:', error.message);
+    return [];
+  }
+}
+
+async function generateShareholderIdForUser(userName) {
+  const year = new Date().getFullYear();
+  const initials = getInitials(userName);
+  const prefixPattern = `SHA-${year}-${initials}`;
+
+  const result = await pool.query(
+    `SELECT shareholder_id FROM shareholders
+     WHERE shareholder_id LIKE $1
+     ORDER BY shareholder_id DESC
+     LIMIT 1`,
+    [`${prefixPattern}-%-${SHAREHOLDER_ID_SUFFIX}`]
+  );
+
+  let seq = 1;
+  if (result.rows[0]?.shareholder_id) {
+    const matches = result.rows[0].shareholder_id.match(/-(\d{2,})-/);
+    if (matches && matches[1]) {
+      seq = parseInt(matches[1], 10) + 1;
+    }
+  }
+
+  return `SHA-${year}-${initials}-${String(seq).padStart(2, '0')}-${SHAREHOLDER_ID_SUFFIX}`;
+}
+
+async function ensureShareholderEarningsRecord(shareholderId) {
+  await pool.query(
+    `INSERT INTO shareholder_earnings (shareholder_id, earnings_balance_usd, status, last_update)
+     VALUES ($1, 0.00, 'active', CURRENT_TIMESTAMP)
+     ON CONFLICT (shareholder_id) DO NOTHING`,
+    [shareholderId]
+  );
+}
+
+async function getShareholderDashboard(memberId) {
+  const user = await getUserByMemberId(memberId);
+  if (!user) return null;
+
+  const shareholder = await getShareholderByMemberId(memberId);
+  if (!shareholder) {
+    return { user, shareholder: null };
+  }
+
+  await ensureShareholderEarningsRecord(shareholder.shareholder_id);
+
+  const [tiersResult, earningsResult, historyResult, topupResult] = await Promise.all([
+    pool.query('SELECT * FROM shareholder_tiers ORDER BY min_usd ASC'),
+    pool.query('SELECT * FROM shareholder_earnings WHERE shareholder_id = $1 LIMIT 1', [shareholder.shareholder_id]),
+    pool.query('SELECT * FROM shareholder_stake_history WHERE shareholder_id = $1 ORDER BY created_at DESC LIMIT 10', [shareholder.shareholder_id]),
+    pool.query('SELECT * FROM shareholder_stake_requests WHERE shareholder_id = $1 ORDER BY created_at DESC LIMIT 10', [shareholder.shareholder_id])
+  ]);
+
+  return {
+    user,
+    shareholder,
+    tiers: tiersResult.rows,
+    earnings: earningsResult.rows[0] || null,
+    stakeHistory: historyResult.rows,
+    topupRequests: topupResult.rows
+  };
+}
+
+async function createShareholderProfile(memberId, adminId, reason = 'Admin created shareholder profile') {
+  const user = await getUserByMemberId(memberId);
+  if (!user) throw new Error('User not found');
+
+  const existing = await getShareholderByMemberId(memberId);
+  if (existing) {
+    throw new Error('Shareholder profile already exists');
+  }
+
+  const tiers = await getShareholderTiers();
+  const baseTier = tiers[0] || { tier_name: 'Bronze' };
+  const shareholderId = await generateShareholderIdForUser(user.name);
+
+  const result = await pool.query(
+    `INSERT INTO shareholders (shareholder_id, member_id, activation_date, status, tier, total_stake_usd)
+     VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4, 0.00)
+     RETURNING *`,
+    [shareholderId, memberId, SHAREHOLDER_STATUS.ACTIVE, baseTier.tier_name]
+  );
+
+  await ensureShareholderEarningsRecord(shareholderId);
+
+  await createShareholderAuditLog({
+    adminId,
+    action: 'create_shareholder_profile',
+    targetId: shareholderId,
+    beforeState: null,
+    afterState: result.rows[0],
+    reason
+  });
+
+  return result.rows[0];
+}
+
+function getLockStatus(shareholder) {
+  if (!shareholder || !shareholder.activation_date) {
+    return { eligible: false, remainingMs: SHAREHOLDER_WITHDRAWAL_LOCK_MONTHS * 30 * 24 * 60 * 60 * 1000 };
+  }
+
+  const activationDate = new Date(shareholder.activation_date);
+  const unlockDate = new Date(activationDate);
+  unlockDate.setMonth(unlockDate.getMonth() + SHAREHOLDER_WITHDRAWAL_LOCK_MONTHS);
+  const now = new Date();
+  const remainingMs = unlockDate.getTime() - now.getTime();
+
+  return {
+    eligible: remainingMs <= 0,
+    unlockDate,
+    remainingMs: Math.max(remainingMs, 0)
+  };
+}
+
+function formatRemainingLockTime(ms) {
+  const days = Math.ceil(ms / (24 * 60 * 60 * 1000));
+  return `${days} day(s)`;
+}
+
+async function recomputeShareholderTierAndStake(shareholderId) {
+  const stakeSum = await pool.query(
+    `SELECT COALESCE(SUM(amount_usd), 0) as total
+     FROM shareholder_stake_history
+     WHERE shareholder_id = $1`,
+    [shareholderId]
+  );
+
+  const totalStake = parseFloat(stakeSum.rows[0].total || 0);
+  const tiers = await getShareholderTiers();
+  const tier = getShareholderTierByStake(tiers, totalStake);
+
+  const result = await pool.query(
+    `UPDATE shareholders
+     SET total_stake_usd = $2,
+         tier = $3,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE shareholder_id = $1
+     RETURNING *`,
+    [shareholderId, totalStake, tier ? tier.tier_name : null]
+  );
+
+  return result.rows[0];
+}
+
+
 // Password hashing
 function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
@@ -1558,6 +1893,52 @@ function calculateNetWithdrawal(amount) {
 // Format currency
 function formatCurrency(amount) {
   return `$${parseFloat(amount).toFixed(2)}`;
+}
+
+const SHAREHOLDER_STATUS = {
+  ACTIVE: 'active',
+  SUSPENDED: 'suspended',
+  UNDER_REVIEW: 'under_review'
+};
+
+const SHAREHOLDER_REQUEST_STATUS = {
+  PENDING_PROOF: 'pending_proof',
+  PENDING_ADMIN_APPROVAL: 'pending_admin_approval',
+  APPROVED: 'approved',
+  REJECTED: 'rejected'
+};
+
+const SHAREHOLDER_WITHDRAWAL_LOCK_MONTHS = 6;
+const SHAREHOLDER_ID_SUFFIX = process.env.SHAREHOLDER_ID_SUFFIX || 'UI';
+const SHAREHOLDER_MIN_TOPUP_USD = parseFloat(process.env.SHAREHOLDER_MIN_TOPUP_USD || '10');
+
+function getInitials(name = '') {
+  const parts = name
+    .split(' ')
+    .map(part => part.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) return 'NA';
+  if (parts.length === 1) {
+    const firstTwo = parts[0].substring(0, 2).toUpperCase();
+    return firstTwo.length === 1 ? `${firstTwo}X` : firstTwo;
+  }
+
+  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+}
+
+function getShareholderTierByStake(tiers, totalStakeUsd) {
+  const stake = parseFloat(totalStakeUsd || 0);
+  const sortedTiers = [...tiers].sort((a, b) => parseFloat(a.min_usd) - parseFloat(b.min_usd));
+  let selectedTier = sortedTiers[0] || null;
+
+  for (const tier of sortedTiers) {
+    if (stake >= parseFloat(tier.min_usd || 0)) {
+      selectedTier = tier;
+    }
+  }
+
+  return selectedTier;
 }
 
 // Generate fake members
@@ -2236,6 +2617,32 @@ bot.on('photo', async (msg) => {
     }
   }
   
+  // Handle shareholder top-up proof photo upload
+  if (session && session.step === 'shareholder_topup_proof_ref' && session.data.requestId) {
+    try {
+      const photo = msg.photo[msg.photo.length - 1];
+      const fileId = photo.file_id;
+      const caption = msg.caption || '';
+
+      await pool.query(
+        `UPDATE shareholder_stake_requests
+         SET proof_file_id = $1,
+             proof_file_type = 'photo',
+             proof_reference = COALESCE(proof_reference, $2),
+             status = $3
+         WHERE request_id = $4`,
+        [fileId, caption || null, SHAREHOLDER_REQUEST_STATUS.PENDING_ADMIN_APPROVAL, session.data.requestId]
+      );
+
+      await bot.sendMessage(chatId, `✅ Photo proof uploaded for request ${session.data.requestId}. You can continue with proof reference text or type SKIP.`);
+      return;
+    } catch (error) {
+      console.log('Error handling shareholder topup photo proof:', error.message);
+      await bot.sendMessage(chatId, '❌ Error uploading proof photo.');
+      return;
+    }
+  }
+
   // Only handle photos in active support chats
   if (!session || !(session.step === 'support_chat' || 
                     session.step === 'support_loggedout_chat' || 
@@ -2262,6 +2669,29 @@ bot.on('document', async (msg) => {
   const chatId = msg.chat.id;
   const session = userSessions[chatId];
   
+  // Handle shareholder top-up proof document upload
+  if (session && session.step === 'shareholder_topup_proof_ref' && session.data.requestId) {
+    try {
+      const fileId = msg.document.file_id;
+      const caption = msg.caption || '';
+      await pool.query(
+        `UPDATE shareholder_stake_requests
+         SET proof_file_id = $1,
+             proof_file_type = 'document',
+             proof_reference = COALESCE(proof_reference, $2),
+             status = $3
+         WHERE request_id = $4`,
+        [fileId, caption || null, SHAREHOLDER_REQUEST_STATUS.PENDING_ADMIN_APPROVAL, session.data.requestId]
+      );
+      await bot.sendMessage(chatId, `✅ Document proof uploaded for request ${session.data.requestId}. You can continue with proof reference text or type SKIP.`);
+      return;
+    } catch (error) {
+      console.log('Error handling shareholder topup document proof:', error.message);
+      await bot.sendMessage(chatId, '❌ Error uploading proof document.');
+      return;
+    }
+  }
+
   // Only handle documents in active support chats
   if (!session || !(session.step === 'support_chat' || 
                     session.step === 'support_loggedout_chat' || 
@@ -2375,6 +2805,7 @@ bot.onText(/\/start/, async (msg) => {
                             `/withdraw - Withdraw funds\n` +
                             `/referral - Share & earn 10% (FIRST investment only)\n` +
                             `/profile - Account details\n` +
+                            `/shareholders - Shareholders dashboard\n` +
                             `/transactions - View transaction history\n` +
                             `/support - Contact support\n` +
                             `/logout - Logout\n\n` +
@@ -2958,6 +3389,211 @@ bot.onText(/\/withdraw/, async (msg) => {
     `Enter amount to withdraw:`
   );
 });
+
+// Shareholder dashboard command
+bot.onText(/\/shareholders/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  try {
+    const dashboard = await getShareholderDashboard(user.member_id);
+
+    if (!dashboard || !dashboard.shareholder) {
+      await bot.sendMessage(chatId,
+        `ℹ️ You do not have a shareholder profile yet.
+
+` +
+        `Contact admin to create one, then use /shareholders again.`
+      );
+      return;
+    }
+
+    const lockStatus = getLockStatus(dashboard.shareholder);
+    const currentTier = dashboard.tiers.find(t => t.tier_name === dashboard.shareholder.tier);
+    const benefits = currentTier ? (currentTier.benefits_json || []) : [];
+
+    let message = `🏛️ **Shareholders Dashboard**
+
+`;
+    message += `👤 Name: ${dashboard.user.name}
+`;
+    message += `🆔 Member ID: ${dashboard.user.member_id}
+`;
+    message += `🧾 Shareholder ID: ${dashboard.shareholder.shareholder_id}
+`;
+    message += `📧 Email: ${dashboard.user.email || 'N/A'}
+`;
+    message += `📱 Phone: ${dashboard.user.phone || 'N/A'}
+`;
+    message += `📌 Status: ${dashboard.shareholder.status}
+
+`;
+
+    message += `💵 Stake Overview (USD)
+`;
+    message += `• Total Stake: ${formatCurrency(dashboard.shareholder.total_stake_usd || 0)}
+`;
+    message += `• Tier: ${dashboard.shareholder.tier || 'Unassigned'}
+
+`;
+
+    message += `🎁 Benefits
+`;
+    if (Array.isArray(benefits) && benefits.length > 0) {
+      benefits.forEach((benefit, idx) => {
+        message += `${idx + 1}. ${benefit}
+`;
+      });
+    } else {
+      message += `No benefits configured for this tier.
+`;
+    }
+
+    message += `
+📈 Earnings Status
+`;
+    message += `• Status: ${dashboard.earnings?.status || 'pending_review'}
+`;
+    message += `• Earnings Balance: ${formatCurrency(dashboard.earnings?.earnings_balance_usd || 0)}
+`;
+
+    if (lockStatus.eligible) {
+      message += `• Withdrawal Lock: ✅ Unlocked
+`;
+    } else {
+      message += `• Withdrawal Lock: ⏳ ${formatRemainingLockTime(lockStatus.remainingMs)} remaining
+`;
+    }
+
+    message += `
+🧾 Recent Stake Requests
+`;
+    if (dashboard.topupRequests.length === 0) {
+      message += `No stake requests found.
+`;
+    } else {
+      dashboard.topupRequests.slice(0, 5).forEach((req, idx) => {
+        message += `${idx + 1}. ${formatCurrency(req.amount_usd)} • ${req.status} • ${new Date(req.created_at).toLocaleDateString()}
+`;
+      });
+    }
+
+    message += `
+🔹 Commands:
+`;
+    message += `/sh_topup - Top up shareholder stake
+`;
+    message += `/sh_withdraw - Withdraw shareholder earnings`;
+
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /shareholders:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading shareholders dashboard.');
+  }
+});
+
+bot.onText(/\/sh_topup/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const shareholder = await getShareholderByMemberId(user.member_id);
+  if (!shareholder) {
+    await bot.sendMessage(chatId, '❌ You are not a shareholder. Contact admin.');
+    return;
+  }
+
+  if (shareholder.status !== SHAREHOLDER_STATUS.ACTIVE) {
+    await bot.sendMessage(chatId, `⚠️ Shareholder status is ${shareholder.status}. Top-up is currently unavailable.`);
+    return;
+  }
+
+  userSessions[chatId] = {
+    step: 'shareholder_topup_amount',
+    data: {
+      memberId: user.member_id,
+      shareholderId: shareholder.shareholder_id
+    }
+  };
+
+  await bot.sendMessage(chatId,
+    `💵 **Shareholder Stake Top-Up (USD)**
+
+` +
+    `Minimum top-up: ${formatCurrency(SHAREHOLDER_MIN_TOPUP_USD)}
+` +
+    `Enter amount in USD:`
+  );
+});
+
+bot.onText(/\/sh_withdraw/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const shareholder = await getShareholderByMemberId(user.member_id);
+  if (!shareholder) {
+    await bot.sendMessage(chatId, '❌ You are not a shareholder. Contact admin.');
+    return;
+  }
+
+  const earningsResult = await pool.query('SELECT * FROM shareholder_earnings WHERE shareholder_id = $1 LIMIT 1', [shareholder.shareholder_id]);
+  const earnings = earningsResult.rows[0] || { earnings_balance_usd: 0, status: 'pending_review' };
+
+  const lockStatus = getLockStatus(shareholder);
+  if (!lockStatus.eligible) {
+    await bot.sendMessage(chatId,
+      `⏳ Withdrawal not available yet.
+` +
+      `Remaining lock time: ${formatRemainingLockTime(lockStatus.remainingMs)}
+` +
+      `Unlock date: ${lockStatus.unlockDate.toLocaleDateString()}`
+    );
+    return;
+  }
+
+  if (earnings.status !== 'active') {
+    await bot.sendMessage(chatId, `⚠️ Earnings status is ${earnings.status}. Withdrawal unavailable.`);
+    return;
+  }
+
+  if (parseFloat(earnings.earnings_balance_usd || 0) <= 0) {
+    await bot.sendMessage(chatId, '❌ No shareholder earnings available for withdrawal.');
+    return;
+  }
+
+  userSessions[chatId] = {
+    step: 'shareholder_withdraw_amount',
+    data: {
+      memberId: user.member_id,
+      shareholderId: shareholder.shareholder_id,
+      earningsBalance: parseFloat(earnings.earnings_balance_usd || 0)
+    }
+  };
+
+  await bot.sendMessage(chatId,
+    `💸 **Shareholder Earnings Withdrawal**
+
+` +
+    `Available earnings: ${formatCurrency(earnings.earnings_balance_usd || 0)}
+` +
+    `Enter withdrawal amount in USD:`
+  );
+});
+
 
 // Logout command
 bot.onText(/\/logout/, async (msg) => {
@@ -3819,6 +4455,7 @@ bot.on('message', async (msg) => {
                        `/transactions - View transaction history\n` +
                        `/referral - Share & earn 10% (FIRST investment only)\n` +
                        `/profile - Account details\n` +
+                       `/shareholders - Shareholders dashboard\n` +
                        `/support - Contact support\n\n` +
                        `✅ You are now logged in!`;
       
@@ -3982,6 +4619,7 @@ bot.on('message', async (msg) => {
                         `/transactions - View transaction history\n` +
                         `/referral - Share & earn 10% (FIRST investment only)\n` +
                         `/profile - Account details\n` +
+                        `/shareholders - Shareholders dashboard\n` +
                         `/changepassword - Change password\n` +
                         `/support - Contact support\n` +
                         `/logout - Logout`;
@@ -3989,6 +4627,224 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, welcomeMessage);
     }
     
+    // Shareholder top-up flow
+    else if (session.step === 'shareholder_topup_amount') {
+      const amount = parseFloat(text);
+
+      if (isNaN(amount) || amount < SHAREHOLDER_MIN_TOPUP_USD) {
+        await bot.sendMessage(chatId, `❌ Invalid amount. Minimum is ${formatCurrency(SHAREHOLDER_MIN_TOPUP_USD)}.`);
+        return;
+      }
+
+      const requestId = `SHT-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO shareholder_stake_requests (request_id, shareholder_id, amount_usd, status)
+         VALUES ($1, $2, $3, $4)`,
+        [requestId, session.data.shareholderId, amount, SHAREHOLDER_REQUEST_STATUS.PENDING_PROOF]
+      );
+
+      session.step = 'shareholder_topup_method';
+      session.data.amount = amount;
+      session.data.requestId = requestId;
+
+      await bot.sendMessage(chatId,
+        `✅ Top-up request created: ${requestId}
+` +
+        `Amount: ${formatCurrency(amount)}
+
+` +
+        `Enter payment method (e.g., M-Pesa, USDT, PayPal):`
+      );
+    }
+    else if (session.step === 'shareholder_topup_method') {
+      const method = text.trim();
+      if (!method) {
+        await bot.sendMessage(chatId, '❌ Please enter a valid payment method.');
+        return;
+      }
+
+      await pool.query(
+        'UPDATE shareholder_stake_requests SET method = $1 WHERE request_id = $2',
+        [method, session.data.requestId]
+      );
+
+      session.step = 'shareholder_topup_proof_ref';
+      session.data.method = method;
+
+      await bot.sendMessage(chatId,
+        `Now submit payment proof reference text (transaction code) or type SKIP.
+` +
+        `After this step, you can upload screenshot/document as the next message.`
+      );
+    }
+    else if (session.step === 'shareholder_topup_proof_ref') {
+      const proofRef = text.trim().toUpperCase() === 'SKIP' ? null : text.trim();
+
+      await pool.query(
+        `UPDATE shareholder_stake_requests
+         SET proof_reference = $1,
+             status = $2
+         WHERE request_id = $3`,
+        [proofRef, SHAREHOLDER_REQUEST_STATUS.PENDING_ADMIN_APPROVAL, session.data.requestId]
+      );
+
+      await createShareholderAuditLog({
+        adminId: session.data.memberId,
+        action: 'shareholder_topup_submitted',
+        targetId: session.data.requestId,
+        afterState: {
+          shareholderId: session.data.shareholderId,
+          amount: session.data.amount,
+          method: session.data.method,
+          proofReference: proofRef
+        },
+        reason: 'User submitted shareholder stake top-up request'
+      });
+
+      const requestId = session.data.requestId;
+      const amount = session.data.amount;
+      const method = session.data.method;
+      const memberId = session.data.memberId;
+      delete userSessions[chatId];
+
+      await bot.sendMessage(chatId,
+        `✅ Proof recorded. Your shareholder top-up request is now pending admin approval.
+
+` +
+        `Request ID: ${requestId}
+` +
+        `Amount: ${formatCurrency(amount)}
+` +
+        `Method: ${method}`
+      );
+
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      for (const adminId of adminIds) {
+        try {
+          await bot.sendMessage(adminId,
+            `🏛️ **Shareholder Top-Up Pending Approval**
+
+` +
+            `Request: ${requestId}
+` +
+            `Member: ${memberId}
+` +
+            `Amount: ${formatCurrency(amount)}
+` +
+            `Method: ${method}
+
+` +
+            `Approve: /sh_approve_topup ${requestId}
+` +
+            `Reject: /sh_reject_topup ${requestId} reason`
+          );
+        } catch (error) {
+          console.log('Could not notify admin for shareholder topup:', adminId, error.message);
+        }
+      }
+    }
+    else if (session.step === 'shareholder_withdraw_amount') {
+      const amount = parseFloat(text);
+      const maxAmount = parseFloat(session.data.earningsBalance || 0);
+
+      if (isNaN(amount) || amount <= 0) {
+        await bot.sendMessage(chatId, '❌ Invalid amount. Enter a positive amount.');
+        return;
+      }
+
+      if (amount > maxAmount) {
+        await bot.sendMessage(chatId, `❌ Amount exceeds available shareholder earnings (${formatCurrency(maxAmount)}).`);
+        return;
+      }
+
+      session.step = 'shareholder_withdraw_method';
+      session.data.amount = amount;
+
+      await bot.sendMessage(chatId, 'Enter payout method (e.g., M-Pesa, Bank, PayPal, USDT):');
+    }
+    else if (session.step === 'shareholder_withdraw_method') {
+      const method = text.trim();
+      if (!method) {
+        await bot.sendMessage(chatId, '❌ Enter a valid payout method.');
+        return;
+      }
+
+      session.step = 'shareholder_withdraw_details';
+      session.data.method = method;
+
+      await bot.sendMessage(chatId, 'Enter payout account/details:');
+    }
+    else if (session.step === 'shareholder_withdraw_details') {
+      const details = text.trim();
+      if (!details) {
+        await bot.sendMessage(chatId, '❌ Enter payout details.');
+        return;
+      }
+
+      const requestId = `SHW-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO shareholder_withdrawal_requests
+         (request_id, shareholder_id, amount_usd, payout_method, payout_details, status)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [requestId, session.data.shareholderId, session.data.amount, session.data.method, details, SHAREHOLDER_REQUEST_STATUS.PENDING_ADMIN_APPROVAL]
+      );
+
+      await createShareholderAuditLog({
+        adminId: session.data.memberId,
+        action: 'shareholder_withdrawal_requested',
+        targetId: requestId,
+        afterState: {
+          shareholderId: session.data.shareholderId,
+          amount: session.data.amount,
+          payoutMethod: session.data.method,
+          payoutDetails: details
+        },
+        reason: 'User submitted shareholder earnings withdrawal request'
+      });
+
+      const amount = session.data.amount;
+      const method = session.data.method;
+      const memberId = session.data.memberId;
+      delete userSessions[chatId];
+
+      await bot.sendMessage(chatId,
+        `✅ Withdrawal request submitted and pending admin approval.
+
+` +
+        `Request ID: ${requestId}
+` +
+        `Amount: ${formatCurrency(amount)}
+` +
+        `Method: ${method}`
+      );
+
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      for (const adminId of adminIds) {
+        try {
+          await bot.sendMessage(adminId,
+            `🏛️ **Shareholder Withdrawal Pending**
+
+` +
+            `Request: ${requestId}
+` +
+            `Member: ${memberId}
+` +
+            `Amount: ${formatCurrency(amount)}
+` +
+            `Method: ${method}
+
+` +
+            `Approve: /sh_approve_withdraw ${requestId}
+` +
+            `Reject: /sh_reject_withdraw ${requestId} reason`
+          );
+        } catch (error) {
+          console.log('Could not notify admin for shareholder withdrawal:', adminId, error.message);
+        }
+      }
+    }
+
+
     // Handle investment amount
     else if (session.step === 'awaiting_investment_amount') {
       const amount = parseFloat(text);
@@ -4778,11 +5634,46 @@ bot.onText(/\/admin/, async (msg) => {
                       `/manualinv USER_ID AMOUNT - Add manual investment\n` +
                       `/deductinv USER_ID AMOUNT - Deduct investment amount\n` +
                       `/viewproof INV_ID - View payment proof\n\n` +
-                      `💳 **Withdrawal Management:**\n` +
-                      `/withdrawals - List withdrawals\n` +
-                      `/approve WDL_ID - Approve withdrawal\n` +
-                      `/reject WDL_ID - Reject withdrawal\n\n` +
-                      `👥 **Referral Management:**\n` +
+                      `💳 **Withdrawal Management:**
+` +
+                      `/withdrawals - List withdrawals
+` +
+                      `/approve WDL_ID - Approve withdrawal
+` +
+                      `/reject WDL_ID - Reject withdrawal
+
+` +
+                      `🏛️ **Shareholder Management (Isolated):**
+` +
+                      `/sh_create USER_ID - Create shareholder profile
+` +
+                      `/sh_view USER_ID_OR_SHA_ID - View shareholder profile
+` +
+                      `/sh_adjust USER_ID_OR_SHA_ID AMOUNT REASON - Manual stake adjustment
+` +
+                      `/sh_setstatus USER_ID_OR_SHA_ID STATUS - active/suspended/under_review
+` +
+                      `/sh_suspend USER_ID_OR_SHA_ID REASON - Suspend shareholder earnings/benefits
+` +
+                      `/sh_unsuspend USER_ID_OR_SHA_ID REASON - Unsuspend shareholder earnings/benefits
+` +
+                      `/sh_delete USER_ID_OR_SHA_ID REASON - Delete shareholder profile only
+` +
+                      `/sh_list [QUERY] - Search/list shareholders
+` +
+                      `/sh_pending - View pending shareholder requests
+` +
+                      `/sh_approve_topup REQ_ID - Approve top-up
+` +
+                      `/sh_reject_topup REQ_ID REASON - Reject top-up
+` +
+                      `/sh_approve_withdraw REQ_ID - Approve shareholder withdrawal
+` +
+                      `/sh_reject_withdraw REQ_ID REASON - Reject shareholder withdrawal
+
+` +
+                      `👥 **Referral Management:**
+` +
                       `/referrals - List all referrals\n` +
                       `/addrefbonus USER_ID AMOUNT - Add referral bonus\n\n` +
                       `🆘 **Support Management:**\n` +
@@ -7080,6 +7971,441 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
     await bot.sendMessage(chatId, '❌ Error rejecting withdrawal.');
   }
 });
+
+function normalizeShareholderStatus(value) {
+  const normalized = (value || '').toLowerCase();
+  if (normalized === 'active') return SHAREHOLDER_STATUS.ACTIVE;
+  if (normalized === 'suspended') return SHAREHOLDER_STATUS.SUSPENDED;
+  if (normalized === 'under_review' || normalized === 'underreview' || normalized === 'review') return SHAREHOLDER_STATUS.UNDER_REVIEW;
+  return null;
+}
+
+async function resolveShareholderByQuery(query) {
+  const cleanQuery = query.trim().toUpperCase();
+  if (cleanQuery.startsWith('SHA-')) {
+    return getShareholderByShareholderId(cleanQuery);
+  }
+  return getShareholderByMemberId(cleanQuery);
+}
+
+bot.onText(/\/sh_create (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const memberId = match[1].trim().toUpperCase();
+  try {
+    const shareholder = await createShareholderProfile(memberId, chatId.toString(), 'Admin create shareholder profile');
+    await bot.sendMessage(chatId,
+      `✅ Shareholder profile created.
+` +
+      `Member ID: ${memberId}
+` +
+      `Shareholder ID: ${shareholder.shareholder_id}
+` +
+      `Status: ${shareholder.status}
+` +
+      `Tier: ${shareholder.tier}`
+    );
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ ${error.message}`);
+  }
+});
+
+bot.onText(/\/sh_view (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const query = match[1].trim();
+  const shareholder = await resolveShareholderByQuery(query);
+  if (!shareholder) return bot.sendMessage(chatId, '❌ Shareholder not found.');
+
+  const [user, earningsRes, pendingTopupsRes, pendingWithdrawRes] = await Promise.all([
+    getUserByMemberId(shareholder.member_id),
+    pool.query('SELECT * FROM shareholder_earnings WHERE shareholder_id = $1 LIMIT 1', [shareholder.shareholder_id]),
+    pool.query("SELECT COUNT(*) FROM shareholder_stake_requests WHERE shareholder_id = $1 AND status = 'pending_admin_approval'", [shareholder.shareholder_id]),
+    pool.query("SELECT COUNT(*) FROM shareholder_withdrawal_requests WHERE shareholder_id = $1 AND status = 'pending_admin_approval'", [shareholder.shareholder_id])
+  ]);
+
+  await bot.sendMessage(chatId,
+    `🏛️ **Shareholder Profile**
+
+` +
+    `Name: ${user?.name || 'N/A'}
+` +
+    `Member ID: ${shareholder.member_id}
+` +
+    `Shareholder ID: ${shareholder.shareholder_id}
+` +
+    `Status: ${shareholder.status}
+` +
+    `Tier: ${shareholder.tier || 'N/A'}
+` +
+    `Total Stake (USD): ${formatCurrency(shareholder.total_stake_usd || 0)}
+` +
+    `Activation Date: ${shareholder.activation_date ? new Date(shareholder.activation_date).toLocaleString() : 'N/A'}
+` +
+    `Earnings Balance: ${formatCurrency(earningsRes.rows[0]?.earnings_balance_usd || 0)}
+` +
+    `Earnings Status: ${earningsRes.rows[0]?.status || 'pending_review'}
+` +
+    `Pending Top-Ups: ${pendingTopupsRes.rows[0].count}
+` +
+    `Pending Withdrawals: ${pendingWithdrawRes.rows[0].count}`
+  );
+});
+
+bot.onText(/\/sh_adjust (\S+) (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const query = match[1];
+  const amount = parseFloat(match[2]);
+  const reason = match[3].trim();
+
+  if (isNaN(amount) || amount === 0) return bot.sendMessage(chatId, '❌ Amount must be non-zero number.');
+
+  const shareholder = await resolveShareholderByQuery(query);
+  if (!shareholder) return bot.sendMessage(chatId, '❌ Shareholder not found.');
+
+  await pool.query(
+    `INSERT INTO shareholder_stake_history (shareholder_id, amount_usd, type, ref, note)
+     VALUES ($1, $2, 'adjustment', $3, $4)`,
+    [shareholder.shareholder_id, amount, `ADMIN-${Date.now()}`, reason]
+  );
+
+  const before = shareholder;
+  const updated = await recomputeShareholderTierAndStake(shareholder.shareholder_id);
+
+  await createShareholderAuditLog({
+    adminId: chatId.toString(),
+    action: 'shareholder_stake_adjustment',
+    targetId: shareholder.shareholder_id,
+    beforeState: before,
+    afterState: updated,
+    reason
+  });
+
+  await bot.sendMessage(chatId,
+    `✅ Shareholder stake adjusted.
+` +
+    `Shareholder: ${shareholder.shareholder_id}
+` +
+    `Adjustment: ${formatCurrency(amount)}
+` +
+    `New Total Stake: ${formatCurrency(updated.total_stake_usd || 0)}
+` +
+    `Tier: ${updated.tier || 'N/A'}`
+  );
+});
+
+bot.onText(/\/sh_setstatus (\S+) (\S+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const query = match[1];
+  const status = normalizeShareholderStatus(match[2]);
+  if (!status) return bot.sendMessage(chatId, '❌ Invalid status. Use: active/suspended/under_review');
+
+  const shareholder = await resolveShareholderByQuery(query);
+  if (!shareholder) return bot.sendMessage(chatId, '❌ Shareholder not found.');
+
+  const before = shareholder;
+  const result = await pool.query(
+    'UPDATE shareholders SET status = $2, updated_at = CURRENT_TIMESTAMP WHERE shareholder_id = $1 RETURNING *',
+    [shareholder.shareholder_id, status]
+  );
+
+  await createShareholderAuditLog({
+    adminId: chatId.toString(),
+    action: 'shareholder_status_change',
+    targetId: shareholder.shareholder_id,
+    beforeState: before,
+    afterState: result.rows[0],
+    reason: `Set status to ${status}`
+  });
+
+  await bot.sendMessage(chatId, `✅ Shareholder ${shareholder.shareholder_id} status updated to ${status}.`);
+});
+
+bot.onText(/\/sh_suspend (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+  const shareholder = await resolveShareholderByQuery(match[1]);
+  if (!shareholder) return bot.sendMessage(chatId, '❌ Shareholder not found.');
+  const reason = match[2].trim();
+
+  await pool.query('UPDATE shareholders SET status = $2, updated_at = CURRENT_TIMESTAMP WHERE shareholder_id = $1', [shareholder.shareholder_id, SHAREHOLDER_STATUS.SUSPENDED]);
+  await pool.query("UPDATE shareholder_earnings SET status = 'suspended', last_update = CURRENT_TIMESTAMP WHERE shareholder_id = $1", [shareholder.shareholder_id]);
+
+  await createShareholderAuditLog({ adminId: chatId.toString(), action: 'shareholder_suspend', targetId: shareholder.shareholder_id, beforeState: shareholder, afterState: { status: 'suspended' }, reason });
+  await bot.sendMessage(chatId, `✅ Shareholder ${shareholder.shareholder_id} suspended.`);
+});
+
+bot.onText(/\/sh_unsuspend (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+  const shareholder = await resolveShareholderByQuery(match[1]);
+  if (!shareholder) return bot.sendMessage(chatId, '❌ Shareholder not found.');
+  const reason = match[2].trim();
+
+  await pool.query('UPDATE shareholders SET status = $2, updated_at = CURRENT_TIMESTAMP WHERE shareholder_id = $1', [shareholder.shareholder_id, SHAREHOLDER_STATUS.ACTIVE]);
+  await pool.query("UPDATE shareholder_earnings SET status = 'active', last_update = CURRENT_TIMESTAMP WHERE shareholder_id = $1", [shareholder.shareholder_id]);
+
+  await createShareholderAuditLog({ adminId: chatId.toString(), action: 'shareholder_unsuspend', targetId: shareholder.shareholder_id, beforeState: shareholder, afterState: { status: 'active' }, reason });
+  await bot.sendMessage(chatId, `✅ Shareholder ${shareholder.shareholder_id} unsuspended.`);
+});
+
+bot.onText(/\/sh_delete (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const shareholder = await resolveShareholderByQuery(match[1]);
+  if (!shareholder) return bot.sendMessage(chatId, '❌ Shareholder not found.');
+  const reason = match[2].trim();
+
+  await pool.query('DELETE FROM shareholder_stake_requests WHERE shareholder_id = $1', [shareholder.shareholder_id]);
+  await pool.query('DELETE FROM shareholder_stake_history WHERE shareholder_id = $1', [shareholder.shareholder_id]);
+  await pool.query('DELETE FROM shareholder_withdrawal_requests WHERE shareholder_id = $1', [shareholder.shareholder_id]);
+  await pool.query('DELETE FROM shareholder_earnings WHERE shareholder_id = $1', [shareholder.shareholder_id]);
+  await pool.query('DELETE FROM shareholders WHERE shareholder_id = $1', [shareholder.shareholder_id]);
+
+  await createShareholderAuditLog({ adminId: chatId.toString(), action: 'shareholder_delete_profile', targetId: shareholder.shareholder_id, beforeState: shareholder, afterState: null, reason });
+  await bot.sendMessage(chatId, `✅ Shareholder profile ${shareholder.shareholder_id} deleted (main user preserved).`);
+});
+
+bot.onText(/\/sh_list(?:\s+(.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const query = match[1] ? match[1].trim().toUpperCase() : '';
+  const result = query
+    ? await pool.query(
+      `SELECT s.*, u.name FROM shareholders s
+       LEFT JOIN users u ON u.member_id = s.member_id
+       WHERE s.member_id ILIKE $1 OR s.shareholder_id ILIKE $1
+       ORDER BY s.created_at DESC LIMIT 20`,
+      [`%${query}%`]
+    )
+    : await pool.query(
+      `SELECT s.*, u.name FROM shareholders s
+       LEFT JOIN users u ON u.member_id = s.member_id
+       ORDER BY s.created_at DESC LIMIT 20`
+    );
+
+  if (result.rows.length === 0) return bot.sendMessage(chatId, '📭 No shareholders found.');
+
+  let message = `🏛️ Shareholders (${result.rows.length})
+
+`;
+  result.rows.forEach((row, idx) => {
+    message += `${idx + 1}. ${row.name || 'N/A'}
+`;
+    message += `   Member: ${row.member_id}
+`;
+    message += `   SHA: ${row.shareholder_id}
+`;
+    message += `   Stake: ${formatCurrency(row.total_stake_usd || 0)}
+`;
+    message += `   Tier/Status: ${row.tier || 'N/A'} / ${row.status}
+
+`;
+  });
+
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/sh_pending/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const [topups, withdrawals] = await Promise.all([
+    pool.query("SELECT * FROM shareholder_stake_requests WHERE status = 'pending_admin_approval' ORDER BY created_at ASC LIMIT 20"),
+    pool.query("SELECT * FROM shareholder_withdrawal_requests WHERE status = 'pending_admin_approval' ORDER BY created_at ASC LIMIT 20")
+  ]);
+
+  let message = `🏛️ **Shareholder Pending Requests**
+
+`;
+  message += `Top-Ups: ${topups.rows.length}
+`;
+  message += `Withdrawals: ${withdrawals.rows.length}
+
+`;
+
+  if (topups.rows.length > 0) {
+    message += `Top-Up Requests:
+`;
+    topups.rows.forEach(req => {
+      message += `• ${req.request_id} | ${req.shareholder_id} | ${formatCurrency(req.amount_usd)}
+`;
+      message += `  Approve: /sh_approve_topup ${req.request_id}
+`;
+      message += `  Reject: /sh_reject_topup ${req.request_id} reason
+`;
+    });
+    message += `
+`;
+  }
+
+  if (withdrawals.rows.length > 0) {
+    message += `Withdrawal Requests:
+`;
+    withdrawals.rows.forEach(req => {
+      message += `• ${req.request_id} | ${req.shareholder_id} | ${formatCurrency(req.amount_usd)}
+`;
+      message += `  Approve: /sh_approve_withdraw ${req.request_id}
+`;
+      message += `  Reject: /sh_reject_withdraw ${req.request_id} reason
+`;
+    });
+  }
+
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/sh_approve_topup (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+  const requestId = match[1].trim();
+
+  const result = await pool.query('SELECT * FROM shareholder_stake_requests WHERE request_id = $1 LIMIT 1', [requestId]);
+  const req = result.rows[0];
+  if (!req) return bot.sendMessage(chatId, '❌ Top-up request not found.');
+  if (req.status !== SHAREHOLDER_REQUEST_STATUS.PENDING_ADMIN_APPROVAL && req.status !== SHAREHOLDER_REQUEST_STATUS.PENDING_PROOF) {
+    return bot.sendMessage(chatId, `⚠️ Request status is ${req.status}.`);
+  }
+
+  await pool.query(
+    `UPDATE shareholder_stake_requests
+     SET status = $2, decided_at = CURRENT_TIMESTAMP, decided_by = $3
+     WHERE request_id = $1`,
+    [requestId, SHAREHOLDER_REQUEST_STATUS.APPROVED, chatId.toString()]
+  );
+
+  await pool.query(
+    `INSERT INTO shareholder_stake_history (shareholder_id, amount_usd, type, ref, note)
+     VALUES ($1, $2, 'topup', $3, $4)`,
+    [req.shareholder_id, req.amount_usd, req.request_id, 'Approved stakeholder top-up request']
+  );
+
+  const shareholderBefore = await getShareholderByShareholderId(req.shareholder_id);
+  const updated = await recomputeShareholderTierAndStake(req.shareholder_id);
+
+  if (!shareholderBefore.activation_date) {
+    await pool.query('UPDATE shareholders SET activation_date = CURRENT_TIMESTAMP WHERE shareholder_id = $1', [req.shareholder_id]);
+  }
+
+  await createShareholderAuditLog({
+    adminId: chatId.toString(),
+    action: 'shareholder_topup_approved',
+    targetId: requestId,
+    beforeState: shareholderBefore,
+    afterState: updated,
+    reason: 'Approved shareholder top-up'
+  });
+
+  await bot.sendMessage(chatId, `✅ Shareholder top-up approved: ${requestId}. New stake: ${formatCurrency(updated.total_stake_usd || 0)}.`);
+
+  const sh = await getShareholderByShareholderId(req.shareholder_id);
+  if (sh) {
+    await sendUserNotification(sh.member_id, `✅ Your shareholder top-up ${requestId} was approved. Stake updated to ${formatCurrency(updated.total_stake_usd || 0)}.`);
+  }
+});
+
+bot.onText(/\/sh_reject_topup (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+  const requestId = match[1].trim();
+  const reason = match[2].trim();
+
+  const result = await pool.query('SELECT * FROM shareholder_stake_requests WHERE request_id = $1 LIMIT 1', [requestId]);
+  const req = result.rows[0];
+  if (!req) return bot.sendMessage(chatId, '❌ Top-up request not found.');
+
+  await pool.query(
+    `UPDATE shareholder_stake_requests
+     SET status = $2, admin_reason = $3, decided_at = CURRENT_TIMESTAMP, decided_by = $4
+     WHERE request_id = $1`,
+    [requestId, SHAREHOLDER_REQUEST_STATUS.REJECTED, reason, chatId.toString()]
+  );
+
+  await createShareholderAuditLog({ adminId: chatId.toString(), action: 'shareholder_topup_rejected', targetId: requestId, beforeState: req, afterState: { status: 'rejected' }, reason });
+
+  await bot.sendMessage(chatId, `✅ Shareholder top-up ${requestId} rejected.`);
+  const sh = await getShareholderByShareholderId(req.shareholder_id);
+  if (sh) {
+    await sendUserNotification(sh.member_id, `❌ Your shareholder top-up ${requestId} was rejected. Reason: ${reason}`);
+  }
+});
+
+bot.onText(/\/sh_approve_withdraw (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+  const requestId = match[1].trim();
+
+  const result = await pool.query('SELECT * FROM shareholder_withdrawal_requests WHERE request_id = $1 LIMIT 1', [requestId]);
+  const req = result.rows[0];
+  if (!req) return bot.sendMessage(chatId, '❌ Shareholder withdrawal request not found.');
+  if (req.status !== SHAREHOLDER_REQUEST_STATUS.PENDING_ADMIN_APPROVAL) return bot.sendMessage(chatId, `⚠️ Request status is ${req.status}.`);
+
+  const earningsRes = await pool.query('SELECT * FROM shareholder_earnings WHERE shareholder_id = $1 LIMIT 1', [req.shareholder_id]);
+  const earnings = earningsRes.rows[0];
+  if (!earnings) return bot.sendMessage(chatId, '❌ Shareholder earnings record missing.');
+
+  const currentBalance = parseFloat(earnings.earnings_balance_usd || 0);
+  const amount = parseFloat(req.amount_usd || 0);
+  if (amount > currentBalance) return bot.sendMessage(chatId, `❌ Insufficient shareholder earnings balance (${formatCurrency(currentBalance)}).`);
+
+  await pool.query(
+    `UPDATE shareholder_withdrawal_requests
+     SET status = $2, decided_at = CURRENT_TIMESTAMP, decided_by = $3
+     WHERE request_id = $1`,
+    [requestId, SHAREHOLDER_REQUEST_STATUS.APPROVED, chatId.toString()]
+  );
+
+  const newBalance = currentBalance - amount;
+  await pool.query(
+    `UPDATE shareholder_earnings
+     SET earnings_balance_usd = $2, last_update = CURRENT_TIMESTAMP
+     WHERE shareholder_id = $1`,
+    [req.shareholder_id, newBalance]
+  );
+
+  await createShareholderAuditLog({ adminId: chatId.toString(), action: 'shareholder_withdrawal_approved', targetId: requestId, beforeState: { earningsBalance: currentBalance }, afterState: { earningsBalance: newBalance }, reason: 'Approved shareholder withdrawal' });
+
+  await bot.sendMessage(chatId, `✅ Shareholder withdrawal ${requestId} approved.`);
+  const sh = await getShareholderByShareholderId(req.shareholder_id);
+  if (sh) {
+    await sendUserNotification(sh.member_id, `✅ Your shareholder withdrawal ${requestId} was approved for ${formatCurrency(req.amount_usd)}.`);
+  }
+});
+
+bot.onText(/\/sh_reject_withdraw (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+  const requestId = match[1].trim();
+  const reason = match[2].trim();
+
+  const result = await pool.query('SELECT * FROM shareholder_withdrawal_requests WHERE request_id = $1 LIMIT 1', [requestId]);
+  const req = result.rows[0];
+  if (!req) return bot.sendMessage(chatId, '❌ Shareholder withdrawal request not found.');
+
+  await pool.query(
+    `UPDATE shareholder_withdrawal_requests
+     SET status = $2, admin_reason = $3, decided_at = CURRENT_TIMESTAMP, decided_by = $4
+     WHERE request_id = $1`,
+    [requestId, SHAREHOLDER_REQUEST_STATUS.REJECTED, reason, chatId.toString()]
+  );
+
+  await createShareholderAuditLog({ adminId: chatId.toString(), action: 'shareholder_withdrawal_rejected', targetId: requestId, beforeState: req, afterState: { status: 'rejected' }, reason });
+
+  await bot.sendMessage(chatId, `✅ Shareholder withdrawal ${requestId} rejected.`);
+  const sh = await getShareholderByShareholderId(req.shareholder_id);
+  if (sh) {
+    await sendUserNotification(sh.member_id, `❌ Your shareholder withdrawal ${requestId} was rejected. Reason: ${reason}`);
+  }
+});
+
 
 // ==================== BROADCAST COMMAND ====================
 
