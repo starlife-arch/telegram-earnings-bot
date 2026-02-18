@@ -988,6 +988,135 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_sh_audit_timestamp ON shareholder_audit_log(timestamp);
     `);
 
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS loan_policy_config (
+        id SERIAL PRIMARY KEY,
+        config_key VARCHAR(100) UNIQUE NOT NULL,
+        config_value VARCHAR(255) NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_by VARCHAR(100)
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS loan_requests (
+        id SERIAL PRIMARY KEY,
+        request_id VARCHAR(50) UNIQUE NOT NULL,
+        member_id VARCHAR(50) NOT NULL,
+        amount_usd DECIMAL(15,2) NOT NULL,
+        term_days INTEGER NOT NULL,
+        interest_rate DECIMAL(8,4) NOT NULL,
+        interest_amount_usd DECIMAL(15,2) NOT NULL,
+        disbursed_amount_usd DECIMAL(15,2) NOT NULL,
+        max_loan_limit_usd DECIMAL(15,2) NOT NULL,
+        eligibility_basis VARCHAR(50) NOT NULL,
+        status VARCHAR(30) DEFAULT 'pending_admin_approval',
+        admin_reason TEXT,
+        requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        decided_at TIMESTAMP,
+        decided_by VARCHAR(100),
+        loan_id VARCHAR(50),
+        FOREIGN KEY (member_id) REFERENCES users(member_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_loan_requests_member_id ON loan_requests(member_id);
+      CREATE INDEX IF NOT EXISTS idx_loan_requests_status ON loan_requests(status);
+      CREATE INDEX IF NOT EXISTS idx_loan_requests_request_id ON loan_requests(request_id);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS loans (
+        id SERIAL PRIMARY KEY,
+        loan_id VARCHAR(50) UNIQUE NOT NULL,
+        request_id VARCHAR(50) UNIQUE NOT NULL,
+        member_id VARCHAR(50) NOT NULL,
+        principal_usd DECIMAL(15,2) NOT NULL,
+        interest_rate DECIMAL(8,4) NOT NULL,
+        interest_deducted_usd DECIMAL(15,2) NOT NULL,
+        disbursed_amount_usd DECIMAL(15,2) NOT NULL,
+        term_days INTEGER NOT NULL,
+        borrowed_at TIMESTAMP NOT NULL,
+        due_date TIMESTAMP NOT NULL,
+        status VARCHAR(30) DEFAULT 'active',
+        principal_outstanding_usd DECIMAL(15,2) NOT NULL,
+        penalties_accrued_usd DECIMAL(15,2) DEFAULT 0.00,
+        penalties_outstanding_usd DECIMAL(15,2) DEFAULT 0.00,
+        total_paid_usd DECIMAL(15,2) DEFAULT 0.00,
+        repaid_at TIMESTAMP,
+        disbursement_reference VARCHAR(100) UNIQUE,
+        disbursed_at TIMESTAMP,
+        last_penalty_applied_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES users(member_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_loans_member_id ON loans(member_id);
+      CREATE INDEX IF NOT EXISTS idx_loans_status ON loans(status);
+      CREATE INDEX IF NOT EXISTS idx_loans_loan_id ON loans(loan_id);
+      CREATE INDEX IF NOT EXISTS idx_loans_due_date ON loans(due_date);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS loan_payments (
+        id SERIAL PRIMARY KEY,
+        payment_id VARCHAR(50) UNIQUE NOT NULL,
+        loan_id VARCHAR(50) NOT NULL,
+        member_id VARCHAR(50) NOT NULL,
+        amount_usd DECIMAL(15,2) NOT NULL,
+        allocated_to_penalty_usd DECIMAL(15,2) DEFAULT 0.00,
+        allocated_to_principal_usd DECIMAL(15,2) DEFAULT 0.00,
+        principal_balance_after_usd DECIMAL(15,2) NOT NULL,
+        penalties_balance_after_usd DECIMAL(15,2) NOT NULL,
+        source VARCHAR(50) DEFAULT 'user_payment',
+        note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (loan_id) REFERENCES loans(loan_id) ON DELETE CASCADE,
+        FOREIGN KEY (member_id) REFERENCES users(member_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_loan_payments_loan_id ON loan_payments(loan_id);
+      CREATE INDEX IF NOT EXISTS idx_loan_payments_member_id ON loan_payments(member_id);
+      CREATE INDEX IF NOT EXISTS idx_loan_payments_created_at ON loan_payments(created_at);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS loan_audit_log (
+        id SERIAL PRIMARY KEY,
+        actor_id VARCHAR(100) NOT NULL,
+        actor_type VARCHAR(30) NOT NULL,
+        action VARCHAR(100) NOT NULL,
+        target_type VARCHAR(50) NOT NULL,
+        target_id VARCHAR(100) NOT NULL,
+        before_state JSONB,
+        after_state JSONB,
+        reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_loan_audit_target ON loan_audit_log(target_type, target_id);
+      CREATE INDEX IF NOT EXISTS idx_loan_audit_actor ON loan_audit_log(actor_id);
+      CREATE INDEX IF NOT EXISTS idx_loan_audit_created_at ON loan_audit_log(created_at);
+    `);
+
+    for (const [configKey, configValue] of Object.entries(DEFAULT_LOAN_POLICY)) {
+      await client.query(
+        `INSERT INTO loan_policy_config (config_key, config_value, updated_by)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (config_key) DO NOTHING`,
+        [configKey, configValue.toString(), 'system']
+      );
+    }
+
     // Create fake_members table
     await client.query(`
       CREATE TABLE IF NOT EXISTS fake_members (
@@ -2139,6 +2268,34 @@ const SHAREHOLDER_TIER_MULTIPLIERS = {
   Platinum: 1.50
 };
 
+const LOAN_REQUEST_STATUS = {
+  PENDING_ADMIN_APPROVAL: 'pending_admin_approval',
+  APPROVED: 'approved',
+  REJECTED: 'rejected'
+};
+
+const LOAN_STATUS = {
+  ACTIVE: 'active',
+  OVERDUE: 'overdue',
+  REPAID: 'repaid'
+};
+
+const LOAN_INTEREST_RATES = {
+  7: 0.10,
+  14: 0.20,
+  30: 0.30
+};
+
+const DEFAULT_LOAN_POLICY = {
+  grace_period_days: 2,
+  daily_penalty_rate: 0.02,
+  max_penalty_cap_rate: 0.50,
+  overdue_threshold_days: 5,
+  enforce_earnings_active: false,
+  min_investment_eligibility_usd: 10,
+  min_shareholder_eligibility_usd: 500
+};
+
 function getInitials(name = '') {
   const parts = name
     .split(' ')
@@ -2166,6 +2323,168 @@ function getShareholderTierByStake(tiers, totalStakeUsd) {
   }
 
   return selectedTier;
+}
+
+
+function roundCurrency(value) {
+  return parseFloat((parseFloat(value || 0)).toFixed(2));
+}
+
+function getLoanInterestRate(termDays) {
+  return LOAN_INTEREST_RATES[termDays] || null;
+}
+
+function toPolicyNumber(value, fallback) {
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+async function getLoanPolicyConfig() {
+  try {
+    const result = await pool.query('SELECT config_key, config_value FROM loan_policy_config');
+    const policy = { ...DEFAULT_LOAN_POLICY };
+
+    for (const row of result.rows) {
+      const key = row.config_key;
+      if (!(key in policy)) continue;
+      if (key === 'enforce_earnings_active') {
+        policy[key] = row.config_value === 'true';
+      } else if (key.includes('days')) {
+        policy[key] = parseInt(row.config_value, 10);
+      } else {
+        policy[key] = toPolicyNumber(row.config_value, policy[key]);
+      }
+    }
+
+    return policy;
+  } catch (error) {
+    console.error('Error getting loan policy config:', error.message);
+    return { ...DEFAULT_LOAN_POLICY };
+  }
+}
+
+async function createLoanAuditLog({ actorId, actorType, action, targetType, targetId, beforeState = null, afterState = null, reason = null }) {
+  try {
+    await pool.query(
+      `INSERT INTO loan_audit_log
+       (actor_id, actor_type, action, target_type, target_id, before_state, after_state, reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [actorId, actorType, action, targetType, targetId, beforeState ? JSON.stringify(beforeState) : null, afterState ? JSON.stringify(afterState) : null, reason]
+    );
+  } catch (error) {
+    console.error('Error creating loan audit log:', error.message);
+  }
+}
+
+async function getMemberLoanContext(memberId) {
+  const [investmentRes, shareholderRes, earningsRes] = await Promise.all([
+    pool.query("SELECT COALESCE(SUM(amount), 0) AS total FROM investments WHERE member_id = $1 AND status = 'active'", [memberId]),
+    pool.query(
+      "SELECT COALESCE(MAX(total_stake_usd), 0) AS total_stake FROM shareholders WHERE member_id = $1 AND status = 'active'",
+      [memberId]
+    ),
+    pool.query(
+      `SELECT se.status
+       FROM shareholder_earnings se
+       JOIN shareholders s ON s.shareholder_id = se.shareholder_id
+       WHERE s.member_id = $1
+       ORDER BY se.last_update DESC NULLS LAST
+       LIMIT 1`,
+      [memberId]
+    )
+  ]);
+
+  const policy = await getLoanPolicyConfig();
+  const investmentUsd = roundCurrency(investmentRes.rows[0]?.total || 0);
+  const shareholderStakeUsd = roundCurrency(shareholderRes.rows[0]?.total_stake || 0);
+  const maxLoanLimitUsd = roundCurrency(Math.max(investmentUsd, shareholderStakeUsd));
+  const eligibleByInvestment = investmentUsd >= policy.min_investment_eligibility_usd;
+  const eligibleByShareholder = shareholderStakeUsd >= policy.min_shareholder_eligibility_usd;
+  const earningsStatus = earningsRes.rows[0]?.status || null;
+
+  return {
+    policy,
+    investmentUsd,
+    shareholderStakeUsd,
+    maxLoanLimitUsd,
+    eligibleByInvestment,
+    eligibleByShareholder,
+    earningsStatus,
+    eligibilityBasis: eligibleByShareholder && shareholderStakeUsd >= investmentUsd
+      ? 'shareholder_stake'
+      : (eligibleByInvestment ? 'active_investment' : 'none')
+  };
+}
+
+async function applyLoanPenaltyIfNeeded(loan) {
+  const policy = await getLoanPolicyConfig();
+  if (![LOAN_STATUS.ACTIVE, LOAN_STATUS.OVERDUE].includes(loan.status)) {
+    return { ...loan, newlyAppliedPenalty: 0 };
+  }
+
+  const now = new Date();
+  const dueDate = new Date(loan.due_date);
+  const overdueDays = Math.floor((now.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000));
+
+  if (overdueDays <= policy.grace_period_days) {
+    return { ...loan, newlyAppliedPenalty: 0 };
+  }
+
+  const penaltyEligibleDays = overdueDays - policy.grace_period_days;
+  const lastAppliedAt = loan.last_penalty_applied_at ? new Date(loan.last_penalty_applied_at) : null;
+  const lastAppliedOverdueDays = lastAppliedAt
+    ? Math.max(0, Math.floor((lastAppliedAt.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000)) - policy.grace_period_days)
+    : 0;
+  const unappliedDays = Math.max(0, penaltyEligibleDays - lastAppliedOverdueDays);
+
+  if (unappliedDays <= 0) {
+    return { ...loan, newlyAppliedPenalty: 0 };
+  }
+
+  const principal = parseFloat(loan.principal_usd || 0);
+  const penaltyPerDay = principal * policy.daily_penalty_rate;
+  const accrued = parseFloat(loan.penalties_accrued_usd || 0);
+  const outstanding = parseFloat(loan.penalties_outstanding_usd || 0);
+  const maxPenalty = principal * policy.max_penalty_cap_rate;
+  const capacity = Math.max(0, maxPenalty - accrued);
+  const addPenalty = roundCurrency(Math.min(capacity, penaltyPerDay * unappliedDays));
+
+  const newStatus = overdueDays > policy.overdue_threshold_days ? LOAN_STATUS.OVERDUE : loan.status;
+
+  if (addPenalty <= 0 && newStatus === loan.status) {
+    return { ...loan, newlyAppliedPenalty: 0 };
+  }
+
+  const updateResult = await pool.query(
+    `UPDATE loans
+     SET penalties_accrued_usd = $1,
+         penalties_outstanding_usd = $2,
+         status = $3,
+         last_penalty_applied_at = $4,
+         updated_at = $5
+     WHERE loan_id = $6
+     RETURNING *`,
+    [roundCurrency(accrued + addPenalty), roundCurrency(outstanding + addPenalty), newStatus, now, now, loan.loan_id]
+  );
+
+  if (addPenalty > 0) {
+    await createLoanAuditLog({
+      actorId: 'system',
+      actorType: 'system',
+      action: 'loan_penalty_applied',
+      targetType: 'loan',
+      targetId: loan.loan_id,
+      afterState: { penaltyAddedUsd: addPenalty, overdueDays, penaltyEligibleDays },
+      reason: 'Daily penalty accrual after grace period'
+    });
+  }
+
+  return { ...updateResult.rows[0], newlyAppliedPenalty: addPenalty };
+}
+
+async function getLatestLoanByMember(memberId) {
+  const result = await pool.query('SELECT * FROM loans WHERE member_id = $1 ORDER BY created_at DESC LIMIT 1', [memberId]);
+  return result.rows[0] || null;
 }
 
 // Generate fake members
@@ -3035,6 +3354,10 @@ bot.onText(/\/start/, async (msg) => {
                             `/referral - Share & earn 10% (FIRST investment only)\n` +
                             `/profile - Account details\n` +
                             `/shareholders - Shareholders dashboard\n` +
+                            `/loan_request - Request a loan\n` +
+                            `/loan_pay - Repay active loan\n` +
+                            `/loan_status - View current loan status\n` +
+                            `/loan_history - View loan history\n` +
                             `/transactions - View transaction history\n` +
                             `/support - Contact support\n` +
                             `/logout - Logout\n\n` +
@@ -3130,7 +3453,11 @@ bot.onText(/\/help/, async (msg) => {
     helpMessage += `**💰 Financial Commands:**\n`;
     helpMessage += `/invest - Make new investment\n`;
     helpMessage += `/withdraw - Withdraw funds\n`;
-    helpMessage += `/viewearnings USER-ID - View others earnings ($1 fee)\n\n`;
+    helpMessage += `/viewearnings USER-ID - View others earnings ($1 fee)\n`;
+    helpMessage += `/loan_request - Request loan (admin approval)\n`;
+    helpMessage += `/loan_pay - Repay loan (penalties first)\n`;
+    helpMessage += `/loan_status - Current loan details\n`;
+    helpMessage += `/loan_history - Loan history\n\n`;
     
     helpMessage += `**🆘 Support Commands:**\n`;
     helpMessage += `/support - Contact support team\n`;
@@ -3620,6 +3947,257 @@ bot.onText(/\/withdraw/, async (msg) => {
 });
 
 // Shareholder dashboard command
+
+bot.onText(/\/loan_request/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!await canUserAccessAccount(chatId)) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const user = await getLoggedInUser(chatId);
+  const context = await getMemberLoanContext(user.member_id);
+
+  const suspensionRes = await pool.query(
+    'SELECT config_value FROM loan_policy_config WHERE config_key = $1 LIMIT 1',
+    [`loan_suspend_${user.member_id}`]
+  );
+  if (suspensionRes.rows.length > 0 && suspensionRes.rows[0].config_value === 'true') {
+    await bot.sendMessage(chatId, '❌ Your loan privileges are currently suspended. Contact admin/support.');
+    return;
+  }
+
+  if (user.banned) {
+    await bot.sendMessage(chatId, '❌ Loan requests are unavailable while account is suspended.');
+    return;
+  }
+
+  if (context.policy.enforce_earnings_active && context.earningsStatus && context.earningsStatus !== 'active') {
+    await bot.sendMessage(chatId, `❌ Loan requests are blocked because earnings status is ${context.earningsStatus}.`);
+    return;
+  }
+
+  if (!context.eligibleByInvestment && !context.eligibleByShareholder) {
+    await bot.sendMessage(chatId,
+      `❌ You are not eligible for a loan yet.
+
+` +
+      `Requirements:
+` +
+      `• Active investments >= ${formatCurrency(context.policy.min_investment_eligibility_usd)} OR
+` +
+      `• Active shareholder stake >= ${formatCurrency(context.policy.min_shareholder_eligibility_usd)}`
+    );
+    return;
+  }
+
+  const pendingRes = await pool.query(
+    `SELECT request_id FROM loan_requests
+     WHERE member_id = $1 AND status = $2
+     ORDER BY requested_at DESC LIMIT 1`,
+    [user.member_id, LOAN_REQUEST_STATUS.PENDING_ADMIN_APPROVAL]
+  );
+  if (pendingRes.rows.length > 0) {
+    await bot.sendMessage(chatId, `⚠️ You already have a pending loan request (${pendingRes.rows[0].request_id}).`);
+    return;
+  }
+
+  const activeRes = await pool.query(
+    `SELECT loan_id FROM loans
+     WHERE member_id = $1 AND status IN ($2, $3)
+     ORDER BY created_at DESC LIMIT 1`,
+    [user.member_id, LOAN_STATUS.ACTIVE, LOAN_STATUS.OVERDUE]
+  );
+  if (activeRes.rows.length > 0) {
+    await bot.sendMessage(chatId, `⚠️ You already have an active/overdue loan (${activeRes.rows[0].loan_id}). Use /loan_status.`);
+    return;
+  }
+
+  userSessions[chatId] = {
+    step: 'awaiting_loan_amount',
+    data: {
+      memberId: user.member_id,
+      maxLoanLimitUsd: context.maxLoanLimitUsd,
+      eligibilityBasis: context.eligibilityBasis,
+      investmentUsd: context.investmentUsd,
+      shareholderStakeUsd: context.shareholderStakeUsd
+    }
+  };
+
+  await bot.sendMessage(chatId,
+    `🏦 **Loan Eligibility**
+
+` +
+    `Investment limit: ${formatCurrency(context.investmentUsd)}
+` +
+    `Shareholder limit: ${formatCurrency(context.shareholderStakeUsd)}
+` +
+    `Max loan limit: ${formatCurrency(context.maxLoanLimitUsd)}
+
+` +
+    `Enter amount to request (USD):`
+  );
+});
+
+bot.onText(/\/loan_status/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!await canUserAccessAccount(chatId)) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const user = await getLoggedInUser(chatId);
+  const latestLoan = await getLatestLoanByMember(user.member_id);
+  const latestReqRes = await pool.query('SELECT * FROM loan_requests WHERE member_id = $1 ORDER BY requested_at DESC LIMIT 1', [user.member_id]);
+  const latestReq = latestReqRes.rows[0] || null;
+
+  if (!latestLoan && !latestReq) {
+    await bot.sendMessage(chatId, 'ℹ️ Loan Status: None. Use /loan_request to request a loan.');
+    return;
+  }
+
+  let message = '🏦 **Loan Status**\n\n';
+
+  if (latestLoan) {
+    const updatedLoan = await applyLoanPenaltyIfNeeded(latestLoan);
+    const outstanding = roundCurrency(parseFloat(updatedLoan.principal_outstanding_usd || 0) + parseFloat(updatedLoan.penalties_outstanding_usd || 0));
+    message += `Status: ${updatedLoan.status.toUpperCase()}\n` +
+      `Loan ID: ${updatedLoan.loan_id}\n` +
+      `Borrowed: ${new Date(updatedLoan.borrowed_at).toLocaleString()}\n` +
+      `Due Date: ${new Date(updatedLoan.due_date).toLocaleString()}\n` +
+      `Principal: ${formatCurrency(updatedLoan.principal_usd)}\n` +
+      `Interest Deducted: ${formatCurrency(updatedLoan.interest_deducted_usd)}\n` +
+      `Amount Received: ${formatCurrency(updatedLoan.disbursed_amount_usd)}\n` +
+      `Principal Outstanding: ${formatCurrency(updatedLoan.principal_outstanding_usd)}\n` +
+      `Penalties Outstanding: ${formatCurrency(updatedLoan.penalties_outstanding_usd)}\n` +
+      `Outstanding Balance: ${formatCurrency(outstanding)}\n`;
+  } else if (latestReq) {
+    message += `Status: ${latestReq.status.toUpperCase()}\n` +
+      `Request ID: ${latestReq.request_id}\n` +
+      `Requested Amount: ${formatCurrency(latestReq.amount_usd)}\n` +
+      `Term: ${latestReq.term_days} days`;
+  }
+
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/loan_history/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!await canUserAccessAccount(chatId)) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const user = await getLoggedInUser(chatId);
+  const historyRes = await pool.query(
+    `SELECT loan_id, principal_usd, status, borrowed_at, due_date, principal_outstanding_usd, penalties_outstanding_usd
+     FROM loans WHERE member_id = $1 ORDER BY borrowed_at DESC LIMIT 10`,
+    [user.member_id]
+  );
+
+  if (historyRes.rows.length === 0) {
+    await bot.sendMessage(chatId, 'ℹ️ No loan history found.');
+    return;
+  }
+
+  let message = '📚 **Loan History (last 10)**\n\n';
+  for (const loan of historyRes.rows) {
+    const outstanding = roundCurrency(parseFloat(loan.principal_outstanding_usd || 0) + parseFloat(loan.penalties_outstanding_usd || 0));
+    message += `• ${loan.loan_id} | ${loan.status.toUpperCase()}\n` +
+      `  Principal: ${formatCurrency(loan.principal_usd)} | Outstanding: ${formatCurrency(outstanding)}\n` +
+      `  Due: ${new Date(loan.due_date).toLocaleDateString()}\n\n`;
+  }
+
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/loans/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!await canUserAccessAccount(chatId)) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const user = await getLoggedInUser(chatId);
+  const latestLoan = await getLatestLoanByMember(user.member_id);
+  const latestReqRes = await pool.query('SELECT * FROM loan_requests WHERE member_id = $1 ORDER BY requested_at DESC LIMIT 1', [user.member_id]);
+  const latestReq = latestReqRes.rows[0] || null;
+
+  if (!latestLoan && !latestReq) {
+    await bot.sendMessage(chatId, 'ℹ️ Loan Status: None. Use /loan_request to request a loan.');
+    return;
+  }
+
+  let message = '🏦 **Loans Dashboard**\n\n';
+  if (latestLoan) {
+    const updatedLoan = await applyLoanPenaltyIfNeeded(latestLoan);
+    const outstanding = roundCurrency(parseFloat(updatedLoan.principal_outstanding_usd || 0) + parseFloat(updatedLoan.penalties_outstanding_usd || 0));
+    message += `Status: ${updatedLoan.status.toUpperCase()}\n` +
+      `Borrowed Date: ${new Date(updatedLoan.borrowed_at).toLocaleString()}\n` +
+      `Due Date: ${new Date(updatedLoan.due_date).toLocaleString()}\n` +
+      `Principal Amount: ${formatCurrency(updatedLoan.principal_usd)}\n` +
+      `Interest Deducted: ${formatCurrency(updatedLoan.interest_deducted_usd)}\n` +
+      `Amount Received: ${formatCurrency(updatedLoan.disbursed_amount_usd)}\n` +
+      `Outstanding Balance: ${formatCurrency(outstanding)}\n` +
+      `Penalties: ${formatCurrency(updatedLoan.penalties_outstanding_usd)}\n\n`;
+
+    const paymentsRes = await pool.query(
+      `SELECT payment_id, amount_usd, allocated_to_penalty_usd, allocated_to_principal_usd, created_at
+       FROM loan_payments WHERE loan_id = $1 ORDER BY created_at DESC LIMIT 5`,
+      [updatedLoan.loan_id]
+    );
+    if (paymentsRes.rows.length > 0) {
+      message += 'Recent repayments:\n';
+      for (const payment of paymentsRes.rows) {
+        message += `• ${payment.payment_id}: ${formatCurrency(payment.amount_usd)} ` +
+          `(Penalty ${formatCurrency(payment.allocated_to_penalty_usd)}, Principal ${formatCurrency(payment.allocated_to_principal_usd)})\n`;
+      }
+    }
+  } else {
+    message += `Latest request status: ${latestReq.status.toUpperCase()}\n` +
+      `Requested: ${formatCurrency(latestReq.amount_usd)} for ${latestReq.term_days} days.`;
+  }
+
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/loan_pay/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!await canUserAccessAccount(chatId)) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+
+  const user = await getLoggedInUser(chatId);
+  const loanRes = await pool.query(
+    `SELECT * FROM loans WHERE member_id = $1 AND status IN ($2, $3) ORDER BY created_at DESC LIMIT 1`,
+    [user.member_id, LOAN_STATUS.ACTIVE, LOAN_STATUS.OVERDUE]
+  );
+  if (loanRes.rows.length === 0) {
+    await bot.sendMessage(chatId, 'ℹ️ No active or overdue loan found.');
+    return;
+  }
+
+  const loan = await applyLoanPenaltyIfNeeded(loanRes.rows[0]);
+  const outstanding = roundCurrency(parseFloat(loan.principal_outstanding_usd || 0) + parseFloat(loan.penalties_outstanding_usd || 0));
+
+  userSessions[chatId] = {
+    step: 'awaiting_loan_payment_amount',
+    data: {
+      memberId: user.member_id,
+      loanId: loan.loan_id,
+      outstanding
+    }
+  };
+
+  await bot.sendMessage(chatId,
+    `💳 Loan repayment for ${loan.loan_id}\n` +
+    `Outstanding: ${formatCurrency(outstanding)}\n` +
+    `Your balance: ${formatCurrency(user.balance || 0)}\n\n` +
+    `Enter repayment amount in USD:`
+  );
+});
+
 bot.onText(/\/shareholders/, async (msg) => {
   const chatId = msg.chat.id;
 
@@ -4685,6 +5263,10 @@ bot.on('message', async (msg) => {
                        `/referral - Share & earn 10% (FIRST investment only)\n` +
                        `/profile - Account details\n` +
                        `/shareholders - Shareholders dashboard\n` +
+                            `/loan_request - Request a loan\n` +
+                            `/loan_pay - Repay active loan\n` +
+                            `/loan_status - View current loan status\n` +
+                            `/loan_history - View loan history\n` +
                        `/support - Contact support\n\n` +
                        `✅ You are now logged in!`;
       
@@ -4849,6 +5431,10 @@ bot.on('message', async (msg) => {
                         `/referral - Share & earn 10% (FIRST investment only)\n` +
                         `/profile - Account details\n` +
                         `/shareholders - Shareholders dashboard\n` +
+                            `/loan_request - Request a loan\n` +
+                            `/loan_pay - Repay active loan\n` +
+                            `/loan_status - View current loan status\n` +
+                            `/loan_history - View loan history\n` +
                         `/changepassword - Change password\n` +
                         `/support - Contact support\n` +
                         `/logout - Logout`;
@@ -5073,6 +5659,230 @@ bot.on('message', async (msg) => {
       }
     }
 
+
+    else if (session.step === 'awaiting_loan_amount') {
+      const amount = parseFloat(text);
+      if (isNaN(amount) || amount <= 0) {
+        await bot.sendMessage(chatId, '❌ Enter a valid loan amount in USD.');
+        return;
+      }
+      if (amount > session.data.maxLoanLimitUsd) {
+        await bot.sendMessage(chatId, `❌ Amount exceeds your max loan limit of ${formatCurrency(session.data.maxLoanLimitUsd)}.`);
+        return;
+      }
+
+      session.data.amountUsd = roundCurrency(amount);
+      session.step = 'awaiting_loan_term';
+
+      await bot.sendMessage(chatId,
+        `Select term:
+` +
+        `1️⃣ 7 days (10% interest deducted upfront)
+` +
+        `2️⃣ 14 days (20% interest deducted upfront)
+` +
+        `3️⃣ 30 days (30% interest deducted upfront)
+
+` +
+        `Reply with 7, 14, or 30:`
+      );
+    }
+    else if (session.step === 'awaiting_loan_term') {
+      const termDays = parseInt(text, 10);
+      const interestRate = getLoanInterestRate(termDays);
+
+      if (!interestRate) {
+        await bot.sendMessage(chatId, '❌ Invalid term. Reply with 7, 14, or 30.');
+        return;
+      }
+
+      const principal = session.data.amountUsd;
+      const interest = roundCurrency(principal * interestRate);
+      const disbursed = roundCurrency(principal - interest);
+      const requestId = `LREQ-${Date.now()}`;
+
+      await pool.query(
+        `INSERT INTO loan_requests
+         (request_id, member_id, amount_usd, term_days, interest_rate, interest_amount_usd, disbursed_amount_usd, max_loan_limit_usd, eligibility_basis, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          requestId,
+          session.data.memberId,
+          principal,
+          termDays,
+          interestRate,
+          interest,
+          disbursed,
+          session.data.maxLoanLimitUsd,
+          session.data.eligibilityBasis,
+          LOAN_REQUEST_STATUS.PENDING_ADMIN_APPROVAL
+        ]
+      );
+
+      await createLoanAuditLog({
+        actorId: session.data.memberId,
+        actorType: 'user',
+        action: 'loan_requested',
+        targetType: 'loan_request',
+        targetId: requestId,
+        afterState: { principal, termDays, interestRate, interest, disbursed }
+      });
+
+      delete userSessions[chatId];
+
+      await bot.sendMessage(chatId,
+        `✅ Loan request submitted for admin approval.
+
+` +
+        `Request ID: ${requestId}
+` +
+        `Principal: ${formatCurrency(principal)}
+` +
+        `Interest deducted: ${formatCurrency(interest)} (${(interestRate * 100).toFixed(0)}%)
+` +
+        `You will receive: ${formatCurrency(disbursed)}
+` +
+        `Repayment due: ${formatCurrency(principal)} (principal only)`
+      );
+
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      for (const adminId of adminIds) {
+        try {
+          await bot.sendMessage(adminId,
+            `🏦 **New Loan Request**
+
+` +
+            `Request: ${requestId}
+` +
+            `User: ${session.data.memberId}
+` +
+            `Principal: ${formatCurrency(principal)}
+` +
+            `Term: ${termDays} days
+` +
+            `Interest: ${formatCurrency(interest)}
+` +
+            `Disburse: ${formatCurrency(disbursed)}
+
+` +
+            `Approve: /loan_approve ${requestId}
+` +
+            `Reject: /loan_reject ${requestId} reason`
+          );
+        } catch (error) {
+          console.log('Could not notify admin for loan request:', adminId, error.message);
+        }
+      }
+    }
+    else if (session.step === 'awaiting_loan_payment_amount') {
+      const amount = parseFloat(text);
+      if (isNaN(amount) || amount <= 0) {
+        await bot.sendMessage(chatId, '❌ Enter a valid repayment amount.');
+        return;
+      }
+
+      const paymentAmount = roundCurrency(amount);
+      const user = await getUserByMemberId(session.data.memberId);
+      if (paymentAmount > parseFloat(user.balance || 0)) {
+        await bot.sendMessage(chatId, `❌ Insufficient balance. Available: ${formatCurrency(user.balance || 0)}.`);
+        return;
+      }
+
+      const loanRes = await pool.query('SELECT * FROM loans WHERE loan_id = $1 LIMIT 1', [session.data.loanId]);
+      if (loanRes.rows.length === 0) {
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId, '❌ Loan not found.');
+        return;
+      }
+
+      const loan = await applyLoanPenaltyIfNeeded(loanRes.rows[0]);
+      if (![LOAN_STATUS.ACTIVE, LOAN_STATUS.OVERDUE].includes(loan.status)) {
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId, '⚠️ This loan is no longer payable.');
+        return;
+      }
+
+      let remaining = paymentAmount;
+      const penaltyOutstanding = parseFloat(loan.penalties_outstanding_usd || 0);
+      const principalOutstanding = parseFloat(loan.principal_outstanding_usd || 0);
+      const toPenalty = roundCurrency(Math.min(remaining, penaltyOutstanding));
+      remaining = roundCurrency(remaining - toPenalty);
+      const toPrincipal = roundCurrency(Math.min(remaining, principalOutstanding));
+
+      const nextPenalty = roundCurrency(penaltyOutstanding - toPenalty);
+      const nextPrincipal = roundCurrency(principalOutstanding - toPrincipal);
+      const nextStatus = nextPenalty <= 0 && nextPrincipal <= 0 ? LOAN_STATUS.REPAID : loan.status;
+
+      await updateUser(session.data.memberId, {
+        balance: roundCurrency(parseFloat(user.balance || 0) - paymentAmount)
+      });
+
+      await pool.query(
+        `UPDATE loans
+         SET penalties_outstanding_usd = $1,
+             principal_outstanding_usd = $2,
+             total_paid_usd = $3,
+             status = $4,
+             repaid_at = $5,
+             updated_at = $6
+         WHERE loan_id = $7`,
+        [
+          nextPenalty,
+          nextPrincipal,
+          roundCurrency(parseFloat(loan.total_paid_usd || 0) + paymentAmount),
+          nextStatus,
+          nextStatus === LOAN_STATUS.REPAID ? new Date() : null,
+          new Date(),
+          loan.loan_id
+        ]
+      );
+
+      const paymentId = `LPAY-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO loan_payments
+         (payment_id, loan_id, member_id, amount_usd, allocated_to_penalty_usd, allocated_to_principal_usd, principal_balance_after_usd, penalties_balance_after_usd, source, note)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [paymentId, loan.loan_id, session.data.memberId, paymentAmount, toPenalty, toPrincipal, nextPrincipal, nextPenalty, 'user_payment', 'User repayment']
+      );
+
+      await createTransaction({
+        id: `TRX-LPAY-${Date.now()}`,
+        memberId: session.data.memberId,
+        type: 'loan_repayment',
+        amount: -paymentAmount,
+        description: `Loan repayment ${loan.loan_id}`
+      });
+
+      await createLoanAuditLog({
+        actorId: session.data.memberId,
+        actorType: 'user',
+        action: 'loan_payment_received',
+        targetType: 'loan',
+        targetId: loan.loan_id,
+        afterState: { paymentId, paymentAmount, toPenalty, toPrincipal, nextPenalty, nextPrincipal, nextStatus }
+      });
+
+      delete userSessions[chatId];
+
+      await bot.sendMessage(chatId,
+        `✅ Loan payment received.
+
+` +
+        `Payment ID: ${paymentId}
+` +
+        `Paid: ${formatCurrency(paymentAmount)}
+` +
+        `Applied to penalties: ${formatCurrency(toPenalty)}
+` +
+        `Applied to principal: ${formatCurrency(toPrincipal)}
+` +
+        `Remaining principal: ${formatCurrency(nextPrincipal)}
+` +
+        `Remaining penalties: ${formatCurrency(nextPenalty)}
+` +
+        `Loan status: ${nextStatus.toUpperCase()}`
+      );
+    }
 
     // Handle investment amount
     else if (session.step === 'awaiting_investment_amount') {
@@ -5899,6 +6709,19 @@ bot.onText(/\/admin/, async (msg) => {
                       `/sh_approve_withdraw REQ_ID - Approve shareholder withdrawal
 ` +
                       `/sh_reject_withdraw REQ_ID REASON - Reject shareholder withdrawal
+
+` +
+                      `🏦 **Loan Management (Isolated):
+` +
+                      `/loan_requests - List recent loan requests
+` +
+                      `/loan_approve REQUEST_ID - Approve and disburse loan
+` +
+                      `/loan_reject REQUEST_ID REASON - Reject loan request
+` +
+                      `/loan_suspend USER_ID REASON - Suspend loan privileges
+` +
+                      `/loan_unsuspend USER_ID REASON - Unsuspend loan privileges
 
 ` +
                       `👥 **Referral Management:**
@@ -8650,6 +9473,214 @@ bot.onText(/\/sh_reject_withdraw (\S+) (.+)/, async (msg, match) => {
 // ==================== BROADCAST COMMAND ====================
 
 // Broadcast to all users
+
+bot.onText(/\/loan_requests/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  const result = await pool.query(
+    `SELECT request_id, member_id, amount_usd, term_days, disbursed_amount_usd, status, requested_at
+     FROM loan_requests ORDER BY requested_at DESC LIMIT 20`
+  );
+
+  if (result.rows.length === 0) {
+    await bot.sendMessage(chatId, 'No loan requests found.');
+    return;
+  }
+
+  let message = '🏦 **Loan Requests (last 20)**\n\n';
+  for (const row of result.rows) {
+    message += `• ${row.request_id} | ${row.status}\n` +
+      `  User: ${row.member_id} | ${formatCurrency(row.amount_usd)} for ${row.term_days}d\n` +
+      `  Disburse: ${formatCurrency(row.disbursed_amount_usd)}\n\n`;
+  }
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/loan_approve (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  const requestId = (match[1] || '').trim();
+  if (!requestId) {
+    await bot.sendMessage(chatId, 'Usage: /loan_approve REQUEST_ID');
+    return;
+  }
+
+  const result = await pool.query('SELECT * FROM loan_requests WHERE request_id = $1 LIMIT 1', [requestId]);
+  if (result.rows.length === 0) {
+    await bot.sendMessage(chatId, `❌ Request ${requestId} not found.`);
+    return;
+  }
+
+  const req = result.rows[0];
+  if (req.status !== LOAN_REQUEST_STATUS.PENDING_ADMIN_APPROVAL) {
+    await bot.sendMessage(chatId, `⚠️ Request ${requestId} is not pending.`);
+    return;
+  }
+
+  const user = await getUserByMemberId(req.member_id);
+  if (!user || user.banned) {
+    await bot.sendMessage(chatId, '❌ User is not active for disbursement.');
+    return;
+  }
+
+  const existingLoan = await pool.query('SELECT loan_id FROM loans WHERE request_id = $1 LIMIT 1', [requestId]);
+  if (existingLoan.rows.length > 0) {
+    await bot.sendMessage(chatId, `⚠️ Request already disbursed as ${existingLoan.rows[0].loan_id}.`);
+    return;
+  }
+
+  const loanId = `LOAN-${Date.now()}`;
+  const borrowedAt = new Date();
+  const dueDate = new Date(borrowedAt.getTime() + parseInt(req.term_days, 10) * 24 * 60 * 60 * 1000);
+  const disbursementRef = `LDSB-${requestId}`;
+  const newBalance = roundCurrency(parseFloat(user.balance || 0) + parseFloat(req.disbursed_amount_usd || 0));
+
+  await updateUser(req.member_id, { balance: newBalance });
+
+  await pool.query(
+    `INSERT INTO loans
+     (loan_id, request_id, member_id, principal_usd, interest_rate, interest_deducted_usd, disbursed_amount_usd, term_days, borrowed_at, due_date, status, principal_outstanding_usd, penalties_accrued_usd, penalties_outstanding_usd, disbursement_reference, disbursed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+    [loanId, req.request_id, req.member_id, req.amount_usd, req.interest_rate, req.interest_amount_usd, req.disbursed_amount_usd, req.term_days, borrowedAt, dueDate, LOAN_STATUS.ACTIVE, req.amount_usd, 0, 0, disbursementRef, borrowedAt]
+  );
+
+  await pool.query(
+    `UPDATE loan_requests
+     SET status = $1, decided_at = $2, decided_by = $3, loan_id = $4
+     WHERE request_id = $5`,
+    [LOAN_REQUEST_STATUS.APPROVED, new Date(), chatId.toString(), loanId, requestId]
+  );
+
+  await createTransaction({
+    id: `TRX-LDISB-${Date.now()}`,
+    memberId: req.member_id,
+    type: 'loan_disbursement',
+    amount: parseFloat(req.disbursed_amount_usd || 0),
+    description: `Loan disbursement ${loanId}`,
+    adminId: chatId.toString()
+  });
+
+  await createLoanAuditLog({
+    actorId: chatId.toString(),
+    actorType: 'admin',
+    action: 'loan_approved_and_disbursed',
+    targetType: 'loan_request',
+    targetId: requestId,
+    afterState: { loanId, disbursedAmountUsd: req.disbursed_amount_usd, disbursementRef }
+  });
+
+  await bot.sendMessage(chatId, `✅ Loan request ${requestId} approved. Loan ID: ${loanId}.`);
+  await sendUserNotification(req.member_id,
+    `✅ Your loan request ${requestId} has been approved.\n` +
+    `Loan ID: ${loanId}\n` +
+    `Principal: ${formatCurrency(req.amount_usd)}\n` +
+    `Interest deducted: ${formatCurrency(req.interest_amount_usd)}\n` +
+    `Amount credited: ${formatCurrency(req.disbursed_amount_usd)}\n` +
+    `Due date: ${dueDate.toLocaleString()}\n\n` +
+    `Repayment due: principal only (${formatCurrency(req.amount_usd)}).`
+  );
+});
+
+bot.onText(/\/loan_reject (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  const requestId = match[1];
+  const reason = match[2];
+  const result = await pool.query('SELECT * FROM loan_requests WHERE request_id = $1 LIMIT 1', [requestId]);
+  if (result.rows.length === 0) {
+    await bot.sendMessage(chatId, `❌ Request ${requestId} not found.`);
+    return;
+  }
+
+  const req = result.rows[0];
+  if (req.status !== LOAN_REQUEST_STATUS.PENDING_ADMIN_APPROVAL) {
+    await bot.sendMessage(chatId, `⚠️ Request ${requestId} is not pending.`);
+    return;
+  }
+
+  await pool.query(
+    `UPDATE loan_requests
+     SET status = $1, admin_reason = $2, decided_at = $3, decided_by = $4
+     WHERE request_id = $5`,
+    [LOAN_REQUEST_STATUS.REJECTED, reason, new Date(), chatId.toString(), requestId]
+  );
+
+  await createLoanAuditLog({
+    actorId: chatId.toString(),
+    actorType: 'admin',
+    action: 'loan_rejected',
+    targetType: 'loan_request',
+    targetId: requestId,
+    reason
+  });
+
+  await bot.sendMessage(chatId, `✅ Loan request ${requestId} rejected.`);
+  await sendUserNotification(req.member_id, `❌ Your loan request ${requestId} was rejected. Reason: ${reason}`);
+});
+
+bot.onText(/\/loan_suspend (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  const memberId = match[1];
+  const reason = match[2];
+  await pool.query(
+    `INSERT INTO loan_policy_config (config_key, config_value, updated_by)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value, updated_at = CURRENT_TIMESTAMP, updated_by = EXCLUDED.updated_by`,
+    [`loan_suspend_${memberId}`, 'true', chatId.toString()]
+  );
+
+  await createLoanAuditLog({
+    actorId: chatId.toString(),
+    actorType: 'admin',
+    action: 'loan_privileges_suspended',
+    targetType: 'member',
+    targetId: memberId,
+    reason
+  });
+
+  await bot.sendMessage(chatId, `✅ Loan privileges suspended for ${memberId}.`);
+});
+
+bot.onText(/\/loan_unsuspend (\S+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  const memberId = match[1];
+  const reason = match[2];
+  await pool.query('DELETE FROM loan_policy_config WHERE config_key = $1', [`loan_suspend_${memberId}`]);
+
+  await createLoanAuditLog({
+    actorId: chatId.toString(),
+    actorType: 'admin',
+    action: 'loan_privileges_unsuspended',
+    targetType: 'member',
+    targetId: memberId,
+    reason
+  });
+
+  await bot.sendMessage(chatId, `✅ Loan privileges unsuspended for ${memberId}.`);
+});
+
 bot.onText(/\/broadcast (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const message = match[1];
