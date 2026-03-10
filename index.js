@@ -2396,6 +2396,26 @@ function generateCompletionCode(memberId) {
   return `SURV-${memberId}-${randomPart}`;
 }
 
+async function generateUniqueCompletionCode(memberId, dbClient = pool, maxAttempts = 10) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const completionCode = generateCompletionCode(memberId);
+    const existing = await dbClient.query(
+      'SELECT id FROM completion_codes WHERE completion_code = $1 LIMIT 1',
+      [completionCode]
+    );
+
+    if (!existing.rows.length) {
+      return completionCode;
+    }
+
+    console.warn(
+      `[Survey Completion] Duplicate completion code generated for ${memberId} on attempt ${attempt}: ${completionCode}`
+    );
+  }
+
+  throw new Error(`Could not generate unique completion code for ${memberId} after ${maxAttempts} attempts`);
+}
+
 function getAdminIds() {
   return process.env.ADMIN_IDS
     ? process.env.ADMIN_IDS.split(',').map(id => id.trim()).filter(Boolean)
@@ -5499,8 +5519,17 @@ bot.on('message', async (msg) => {
       return;
     }
     else if (session.step === 'survey_answering') {
-      const idx = session.data.currentQuestion;
+      const idx = Number(session.data.currentQuestion || 0);
       const questions = session.data.questions || [];
+      if (idx < 0 || idx >= questions.length) {
+        console.error(
+          `[Survey Completion] Invalid question index for ${session.data.memberId}. index=${idx}, total=${questions.length}, survey=${session.data.surveyId}`
+        );
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId, '❌ Survey session expired. Please run /survey again.');
+        return;
+      }
+
       const q = questions[idx];
       if (!q) {
         delete userSessions[chatId];
@@ -5535,37 +5564,63 @@ bot.on('message', async (msg) => {
 
       session.data.currentQuestion += 1;
       if (session.data.currentQuestion >= questions.length) {
+        console.log(`[Survey Completion] Finalizing survey for ${session.data.memberId}, survey=${session.data.surveyId}`);
         const score = session.data.responses.filter(r => r.result === 'Correct').length;
-        const completionCode = generateCompletionCode(session.data.memberId);
+        let completionCode;
+        let responseId;
+        const client = await pool.connect();
 
-        const responseInsert = await pool.query(
-          `INSERT INTO survey_responses (user_id, survey_id, responses, score, total_questions, completion_code)
-           VALUES ($1, $2, $3::jsonb, $4, $5, $6) RETURNING id`,
-          [
-            session.data.memberId,
-            session.data.surveyId,
-            JSON.stringify(session.data.responses),
-            score,
-            questions.length,
-            completionCode
-          ]
-        );
+        try {
+          await client.query('BEGIN');
 
-        const expiresAtQuery = `CURRENT_TIMESTAMP + INTERVAL '${SURVEY_CODE_EXPIRY_HOURS} hours'`;
-        await pool.query(
-          `INSERT INTO completion_codes (completion_code, user_id, survey_id, response_id, status, expires_at)
-           VALUES ($1, $2, $3, $4, 'generated', ${expiresAtQuery})`,
-          [completionCode, session.data.memberId, session.data.surveyId, responseInsert.rows[0].id]
-        );
+          console.log(`[Survey Completion] Generating completion code for ${session.data.memberId}`);
+          completionCode = await generateUniqueCompletionCode(session.data.memberId, client);
+
+          console.log(`[Survey Completion] Saving final survey response for ${session.data.memberId}`);
+          const responseInsert = await client.query(
+            `INSERT INTO survey_responses (user_id, survey_id, responses, score, total_questions, completion_code)
+             VALUES ($1, $2, $3::jsonb, $4, $5, $6) RETURNING id`,
+            [
+              session.data.memberId,
+              session.data.surveyId,
+              JSON.stringify(session.data.responses),
+              score,
+              questions.length,
+              completionCode
+            ]
+          );
+          responseId = responseInsert.rows[0].id;
+
+          console.log(`[Survey Completion] Writing completion code record for ${session.data.memberId}: ${completionCode}`);
+          const expiresAtQuery = `CURRENT_TIMESTAMP + INTERVAL '${SURVEY_CODE_EXPIRY_HOURS} hours'`;
+          await client.query(
+            `INSERT INTO completion_codes (completion_code, user_id, survey_id, response_id, status, expires_at)
+             VALUES ($1, $2, $3, $4, 'generated', ${expiresAtQuery})`,
+            [completionCode, session.data.memberId, session.data.surveyId, responseId]
+          );
+
+          await client.query('COMMIT');
+        } catch (completionError) {
+          await client.query('ROLLBACK');
+          console.error(
+            `[Survey Completion] Failed to finalize survey for ${session.data.memberId}, survey=${session.data.surveyId}:`,
+            completionError
+          );
+          throw completionError;
+        } finally {
+          client.release();
+        }
 
         await logSurveyAudit(session.data.memberId, 'user', 'complete_survey', 'survey', session.data.surveyId, { completionCode, score });
 
-        delete userSessions[chatId];
+        console.log(`[Survey Completion] Sending completion message to ${session.data.memberId}, responseId=${responseId}`);
         await bot.sendMessage(chatId,
           `✅ Survey completed successfully.\n\n` +
           `Your completion code is:\n${completionCode}\n\n` +
           `Use /submitcode to submit your completion code for points review.`
         );
+
+        delete userSessions[chatId];
         return;
       }
 
@@ -7528,7 +7583,12 @@ else if (session && session.step === 'confirm_broadcast') {
   }
 }
   } catch (error) {
-    console.log('Message handling error:', error.message);
+    console.error('Message handling error:', {
+      message: error.message,
+      stack: error.stack,
+      chatId,
+      step: session?.step
+    });
     await bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
     delete userSessions[chatId];
   }
