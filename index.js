@@ -1136,11 +1136,22 @@ async function initDatabase() {
         question_id VARCHAR(60) UNIQUE NOT NULL,
         survey_id VARCHAR(50) NOT NULL,
         question_text TEXT NOT NULL,
+        question_type VARCHAR(30) DEFAULT 'multiple_choice',
         answer_options JSONB DEFAULT '[]'::jsonb,
-        correct_answer TEXT NOT NULL,
+        correct_answer TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (survey_id) REFERENCES surveys(survey_id) ON DELETE CASCADE
       )
+    `);
+
+    await client.query(`
+      ALTER TABLE survey_questions
+      ADD COLUMN IF NOT EXISTS question_type VARCHAR(30) DEFAULT 'multiple_choice';
+    `);
+
+    await client.query(`
+      ALTER TABLE survey_questions
+      ALTER COLUMN correct_answer DROP NOT NULL;
     `);
 
     await client.query(`
@@ -2383,6 +2394,89 @@ function normalizeSurveyId(input = '') {
 function generateCompletionCode(memberId) {
   const randomPart = crypto.randomBytes(3).toString('hex').toUpperCase();
   return `SURV-${memberId}-${randomPart}`;
+}
+
+function getAdminIds() {
+  return process.env.ADMIN_IDS
+    ? process.env.ADMIN_IDS.split(',').map(id => id.trim()).filter(Boolean)
+    : [];
+}
+
+function normalizeSkipInput(input = '') {
+  return input
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function notifyAdminsSurveyEvent({
+  eventType,
+  userName,
+  memberId,
+  surveyId = null,
+  completionCode = null,
+  requestedPoints = null,
+  availablePointsBefore = null,
+  status,
+  submittedAt,
+  actorId = 'system'
+}) {
+  const adminIds = getAdminIds();
+
+  const lines = [];
+  if (eventType === 'survey_submission') {
+    lines.push('🚨 **New Survey Code Submission**');
+    lines.push(`${memberId} submitted a survey code for review.`);
+    if (completionCode && surveyId) {
+      lines.push(`${memberId} submitted ${completionCode} for ${surveyId}.`);
+    }
+    lines.push(`User Name: ${userName || 'Unknown'}`);
+    lines.push(`Member ID: ${memberId}`);
+    lines.push(`Survey ID: ${surveyId || 'N/A'}`);
+    lines.push(`Completion Code: ${completionCode || 'N/A'}`);
+    lines.push(`Submission Time: ${new Date(submittedAt).toLocaleString()}`);
+    lines.push(`Current Status: ${status}`);
+    lines.push('Next command:');
+    lines.push(`/surveyresponses ${memberId}`);
+    lines.push(`/approvepoints ${memberId} 20`);
+    lines.push(`/rejectpoints ${memberId}`);
+  } else if (eventType === 'redemption_request') {
+    lines.push('🚨 **New Points Redemption Request**');
+    lines.push(`${memberId} requested to redeem ${requestedPoints} points.`);
+    lines.push(`User Name: ${userName || 'Unknown'}`);
+    lines.push(`Member ID: ${memberId}`);
+    lines.push(`Requested Points: ${requestedPoints}`);
+    lines.push(`Available Points Before Request: ${availablePointsBefore}`);
+    lines.push(`Request Time: ${new Date(submittedAt).toLocaleString()}`);
+    lines.push(`Current Status: ${status}`);
+    lines.push('Next command:');
+    lines.push(`/approveredemption ${memberId} ${requestedPoints}`);
+    lines.push(`/rejectredemption ${memberId}`);
+  }
+
+  const adminMessage = lines.join('\n');
+  let delivered = 0;
+  for (const adminId of adminIds) {
+    try {
+      await bot.sendMessage(adminId, adminMessage);
+      delivered += 1;
+    } catch (error) {
+      console.log('Could not notify survey admin:', adminId, error.message);
+    }
+  }
+
+  await logSurveyAudit(actorId, 'system', 'admin_notification_sent', eventType, memberId, {
+    eventType,
+    memberId,
+    surveyId,
+    completionCode,
+    requestedPoints,
+    status,
+    delivered,
+    attempted: adminIds.length
+  });
 }
 
 async function logSurveyAudit(actorId, actorType, action, targetType, targetId, metadata = {}) {
@@ -5111,29 +5205,57 @@ bot.onText(/\/surveyresponses (.+)/, async (msg, match) => {
   const memberId = match[1].trim().toUpperCase();
   const rows = await pool.query(
     `SELECT survey_id, completion_code, status, points_awarded, submission_time, responses
-     FROM survey_submissions WHERE user_id = $1 ORDER BY submission_time DESC LIMIT 5`,
+     FROM survey_submissions WHERE user_id = $1 ORDER BY submission_time DESC`,
     [memberId]
   );
 
   if (!rows.rows.length) return bot.sendMessage(chatId, `No survey submissions for ${memberId}.`);
 
-  let message = `🧾 **Survey Responses: ${memberId}**
+  const chunks = [];
+  let current = `🧾 **Survey Responses: ${memberId}**
 
 `;
-  rows.rows.forEach((row, idx) => {
-    message += `${idx + 1}. ${row.survey_id} | ${row.completion_code}
-`;
-    message += `Status: ${row.status} | Points: ${row.points_awarded}
-`;
-    message += `Submitted: ${new Date(row.submission_time).toLocaleString()}
-`;
-    const answers = Array.isArray(row.responses) ? row.responses.slice(0, 3) : [];
-    answers.forEach((a, i) => { message += `  Q${i + 1}: ${a.answer} (${a.result})
-`; });
-    message += `\n`;
-  });
 
-  await bot.sendMessage(chatId, message);
+  for (const [idx, row] of rows.rows.entries()) {
+    let entry = `${idx + 1}. ${row.survey_id} | ${row.completion_code}
+`;
+    entry += `Status: ${row.status} | Points: ${row.points_awarded}
+`;
+    entry += `Submitted: ${new Date(row.submission_time).toLocaleString()}
+
+`;
+
+    const answers = Array.isArray(row.responses) ? row.responses : [];
+    if (!answers.length) {
+      entry += `No answers captured.
+
+`;
+    } else {
+      answers.forEach((a, answerIdx) => {
+        const answerText = typeof a.answer === 'string' ? a.answer : JSON.stringify(a.answer ?? '');
+        const resultText = a.result || 'No Auto-Grading';
+        entry += `Q${answerIdx + 1}: ${a.question || 'N/A'}
+`;
+        entry += `Answer: ${answerText}
+`;
+        entry += `Result: ${resultText}
+
+`;
+      });
+    }
+
+    if ((current + entry).length > 3500) {
+      chunks.push(current);
+      current = entry;
+    } else {
+      current += entry;
+    }
+  }
+
+  if (current.trim()) chunks.push(current);
+  for (const chunk of chunks) {
+    await bot.sendMessage(chatId, chunk);
+  }
 });
 
 bot.onText(/\/approvepoints (.+?) (\d+)/, async (msg, match) => {
@@ -5258,6 +5380,38 @@ bot.onText(/\/approveredemption (.+?) (\d+)/, async (msg, match) => {
   await bot.sendMessage(chatId, `✅ Approved ${points}-point redemption for ${memberId}.`);
 });
 
+
+bot.onText(/\/rejectredemption (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const memberId = match[1].trim().toUpperCase();
+  const req = await pool.query(
+    `SELECT * FROM survey_redemptions
+     WHERE user_id = $1 AND status = 'pending_admin_approval'
+     ORDER BY request_time ASC LIMIT 1`,
+    [memberId]
+  );
+
+  if (!req.rows.length) return bot.sendMessage(chatId, `❌ No pending redemption request found for ${memberId}.`);
+
+  await pool.query(
+    `UPDATE survey_redemptions
+     SET status = 'rejected', decided_at = CURRENT_TIMESTAMP, decided_by = $2
+     WHERE id = $1`,
+    [req.rows[0].id, chatId.toString()]
+  );
+
+  await logSurveyAudit(chatId.toString(), 'admin', 'reject_redemption', 'redemption', req.rows[0].id.toString(), {
+    memberId,
+    points: req.rows[0].points_requested,
+    status: 'rejected'
+  });
+
+  await sendUserNotification(memberId, '❌ Your redemption request has been rejected by admin.');
+  await bot.sendMessage(chatId, `✅ Rejected redemption request for ${memberId}.`);
+});
+
 bot.onText(/\/resetsurvey (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
@@ -5315,7 +5469,7 @@ bot.on('message', async (msg) => {
       }
 
       const questions = await pool.query(
-        'SELECT question_id, question_text, answer_options, correct_answer FROM survey_questions WHERE survey_id = $1 ORDER BY created_at ASC',
+        'SELECT question_id, question_text, answer_options, correct_answer, question_type FROM survey_questions WHERE survey_id = $1 ORDER BY created_at ASC',
         [picked.survey_id]
       );
 
@@ -5355,16 +5509,29 @@ bot.on('message', async (msg) => {
       }
 
       const answer = text.trim();
-      const isCorrect = answer.toLowerCase() === (q.correct_answer || '').toLowerCase();
+      const answerOptions = Array.isArray(q.answer_options) ? q.answer_options : [];
+      const normalizedCorrect = (q.correct_answer || '').trim().toUpperCase();
+      const isTextQuestion = !answerOptions.length || ['N/A', 'NONE', 'NULL'].includes(normalizedCorrect) || !q.correct_answer;
+
+      let result = 'No Auto-Grading';
+      if (isTextQuestion) {
+        result = 'Text Response';
+      } else {
+        const isCorrect = answer.toLowerCase() === (q.correct_answer || '').toLowerCase();
+        result = isCorrect ? 'Correct' : 'Wrong';
+      }
+
       session.data.responses.push({
         question_id: q.question_id,
         question: q.question_text,
         answer,
-        correct_answer: q.correct_answer,
-        result: isCorrect ? 'Correct' : 'Wrong'
+        correct_answer: isTextQuestion ? null : q.correct_answer,
+        answer_options: answerOptions,
+        question_type: isTextQuestion ? 'text' : 'multiple_choice',
+        result
       });
 
-      await bot.sendMessage(chatId, isCorrect ? 'Correct' : 'Wrong');
+      await bot.sendMessage(chatId, result);
 
       session.data.currentQuestion += 1;
       if (session.data.currentQuestion >= questions.length) {
@@ -5472,7 +5639,20 @@ bot.on('message', async (msg) => {
         [completionCode]
       );
 
-      await logSurveyAudit(session.data.memberId, 'user', 'submit_completion_code', 'completion_code', completionCode, { surveyId: code.survey_id });
+      const submitter = await getUserByMemberId(session.data.memberId);
+      const submissionTime = new Date();
+      await notifyAdminsSurveyEvent({
+        eventType: 'survey_submission',
+        userName: submitter?.name || 'Unknown',
+        memberId: session.data.memberId,
+        surveyId: code.survey_id,
+        completionCode,
+        status: 'pending_review',
+        submittedAt: submissionTime,
+        actorId: session.data.memberId
+      });
+
+      await logSurveyAudit(session.data.memberId, 'user', 'submit_completion_code', 'completion_code', completionCode, { surveyId: code.survey_id, submittedAt: submissionTime.toISOString() });
 
       delete userSessions[chatId];
       await bot.sendMessage(chatId, '✅ Submission received. Status: PENDING_REVIEW.');
@@ -5493,13 +5673,31 @@ bot.on('message', async (msg) => {
         return;
       }
 
-      await pool.query(
+      const requestTime = new Date();
+      const redemptionInsert = await pool.query(
         `INSERT INTO survey_redemptions (user_id, points_requested, status)
-         VALUES ($1, $2, 'pending_admin_approval')`,
+         VALUES ($1, $2, 'pending_admin_approval')
+         RETURNING id`,
         [session.data.memberId, pointsToRedeem]
       );
 
-      await logSurveyAudit(session.data.memberId, 'user', 'request_redemption', 'redemption', session.data.memberId, { points: pointsToRedeem });
+      const redeemer = await getUserByMemberId(session.data.memberId);
+      await notifyAdminsSurveyEvent({
+        eventType: 'redemption_request',
+        userName: redeemer?.name || 'Unknown',
+        memberId: session.data.memberId,
+        requestedPoints: pointsToRedeem,
+        availablePointsBefore: points.available_points,
+        status: 'pending_admin_approval',
+        submittedAt: requestTime,
+        actorId: session.data.memberId
+      });
+
+      await logSurveyAudit(session.data.memberId, 'user', 'request_redemption', 'redemption', redemptionInsert.rows[0].id.toString(), {
+        points: pointsToRedeem,
+        availablePointsBefore: points.available_points,
+        requestTime: requestTime.toISOString()
+      });
       delete userSessions[chatId];
       await bot.sendMessage(chatId, `✅ Redemption request for ${pointsToRedeem} points created. Status: PENDING_ADMIN_APPROVAL.`);
       return;
@@ -8574,10 +8772,9 @@ bot.on('message', async (msg) => {
 
   if (adminSession.step === 'survey_add_question_options') {
     const raw = text.trim();
-    const normalizedToken = raw.toUpperCase().replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim();
-    const skipTokens = new Set(['SKIP', 'SKIP FOR TEXT QUESTION']);
+    const normalizedToken = normalizeSkipInput(raw);
 
-    adminSession.data.answerOptions = skipTokens.has(normalizedToken)
+    adminSession.data.answerOptions = normalizedToken.startsWith('SKIP')
       ? []
       : raw.split('|').map(v => v.trim()).filter(Boolean);
 
@@ -8585,18 +8782,22 @@ bot.on('message', async (msg) => {
     if (!hasOptions) {
       const questionId = await generateQuestionId(adminSession.data.surveyId);
       await pool.query(
-        `INSERT INTO survey_questions (question_id, survey_id, question_text, answer_options, correct_answer)
-         VALUES ($1, $2, $3, $4::jsonb, $5)`,
+        `INSERT INTO survey_questions (question_id, survey_id, question_text, question_type, answer_options, correct_answer)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
         [
           questionId,
           adminSession.data.surveyId,
           adminSession.data.questionText,
+          'text',
           JSON.stringify([]),
-          'N/A'
+          null
         ]
       );
 
-      await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId });
+      await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, {
+        surveyId: adminSession.data.surveyId,
+        questionType: 'text'
+      });
 
       delete adminSessions[chatId];
       await bot.sendMessage(chatId, `✅ Text question saved with ID ${questionId}.`);
@@ -8609,16 +8810,18 @@ bot.on('message', async (msg) => {
   }
 
   if (adminSession.step === 'survey_add_question_correct') {
-    const correctAnswer = text.trim();
+    const correctAnswerInput = text.trim();
+    const normalizedToken = normalizeSkipInput(correctAnswerInput);
+    const markAsTextQuestion = normalizedToken.startsWith('SKIP');
 
-    if (!correctAnswer) {
+    if (!correctAnswerInput) {
       await bot.sendMessage(chatId, '❌ Correct answer cannot be empty.');
       return;
     }
 
     const hasOptions = Array.isArray(adminSession.data.answerOptions) && adminSession.data.answerOptions.length > 0;
-    if (hasOptions) {
-      const normalizedAnswer = correctAnswer.toLowerCase();
+    if (hasOptions && !markAsTextQuestion) {
+      const normalizedAnswer = correctAnswerInput.toLowerCase();
       const answerExists = adminSession.data.answerOptions.some(option => option.toLowerCase() === normalizedAnswer);
       if (!answerExists) {
         await bot.sendMessage(chatId, '❌ Correct answer must exactly match one of the options.');
@@ -8627,20 +8830,26 @@ bot.on('message', async (msg) => {
     }
 
     const questionId = await generateQuestionId(adminSession.data.surveyId);
+    const questionType = markAsTextQuestion ? 'text' : 'multiple_choice';
+    const correctAnswer = markAsTextQuestion ? null : correctAnswerInput;
 
     await pool.query(
-      `INSERT INTO survey_questions (question_id, survey_id, question_text, answer_options, correct_answer)
-       VALUES ($1, $2, $3, $4::jsonb, $5)`,
+      `INSERT INTO survey_questions (question_id, survey_id, question_text, question_type, answer_options, correct_answer)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
       [
         questionId,
         adminSession.data.surveyId,
         adminSession.data.questionText,
-        JSON.stringify(adminSession.data.answerOptions || []),
+        questionType,
+        JSON.stringify(markAsTextQuestion ? [] : (adminSession.data.answerOptions || [])),
         correctAnswer
       ]
     );
 
-    await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId });
+    await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, {
+      surveyId: adminSession.data.surveyId,
+      questionType
+    });
 
     delete adminSessions[chatId];
     await bot.sendMessage(chatId, `✅ Question saved with ID ${questionId}.`);
