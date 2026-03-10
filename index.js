@@ -1117,6 +1117,136 @@ async function initDatabase() {
       );
     }
 
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS surveys (
+        id SERIAL PRIMARY KEY,
+        survey_id VARCHAR(50) UNIQUE NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        question_count INTEGER NOT NULL,
+        question_type VARCHAR(30) NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_by VARCHAR(100) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS survey_questions (
+        id SERIAL PRIMARY KEY,
+        question_id VARCHAR(60) UNIQUE NOT NULL,
+        survey_id VARCHAR(50) NOT NULL,
+        question_text TEXT NOT NULL,
+        answer_options JSONB DEFAULT '[]'::jsonb,
+        correct_answer TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (survey_id) REFERENCES surveys(survey_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS survey_responses (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(50) NOT NULL,
+        survey_id VARCHAR(50) NOT NULL,
+        responses JSONB NOT NULL,
+        score INTEGER DEFAULT 0,
+        total_questions INTEGER DEFAULT 0,
+        completion_code VARCHAR(120) UNIQUE NOT NULL,
+        completion_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(member_id) ON DELETE CASCADE,
+        FOREIGN KEY (survey_id) REFERENCES surveys(survey_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS completion_codes (
+        id SERIAL PRIMARY KEY,
+        completion_code VARCHAR(120) UNIQUE NOT NULL,
+        user_id VARCHAR(50) NOT NULL,
+        survey_id VARCHAR(50) NOT NULL,
+        response_id INTEGER NOT NULL,
+        status VARCHAR(30) DEFAULT 'generated',
+        expires_at TIMESTAMP NOT NULL,
+        used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(member_id) ON DELETE CASCADE,
+        FOREIGN KEY (survey_id) REFERENCES surveys(survey_id) ON DELETE CASCADE,
+        FOREIGN KEY (response_id) REFERENCES survey_responses(id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS survey_submissions (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(50) NOT NULL,
+        completion_code VARCHAR(120) UNIQUE NOT NULL,
+        survey_id VARCHAR(50) NOT NULL,
+        response_id INTEGER NOT NULL,
+        responses JSONB NOT NULL,
+        status VARCHAR(40) DEFAULT 'pending_review',
+        submission_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at TIMESTAMP,
+        reviewed_by VARCHAR(100),
+        points_awarded INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(member_id) ON DELETE CASCADE,
+        FOREIGN KEY (survey_id) REFERENCES surveys(survey_id) ON DELETE CASCADE,
+        FOREIGN KEY (response_id) REFERENCES survey_responses(id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS survey_points (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(50) UNIQUE NOT NULL,
+        total_points_earned INTEGER DEFAULT 0,
+        points_redeemed INTEGER DEFAULT 0,
+        available_points INTEGER DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(member_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS survey_redemptions (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(50) NOT NULL,
+        points_requested INTEGER NOT NULL,
+        status VARCHAR(40) DEFAULT 'pending_admin_approval',
+        request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        decided_at TIMESTAMP,
+        decided_by VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(member_id) ON DELETE CASCADE
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS survey_audit_log (
+        id SERIAL PRIMARY KEY,
+        actor_id VARCHAR(100) NOT NULL,
+        actor_type VARCHAR(30) NOT NULL,
+        action VARCHAR(100) NOT NULL,
+        target_type VARCHAR(50) NOT NULL,
+        target_id VARCHAR(100) NOT NULL,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_surveys_survey_id ON surveys(survey_id);
+      CREATE INDEX IF NOT EXISTS idx_survey_questions_survey_id ON survey_questions(survey_id);
+      CREATE INDEX IF NOT EXISTS idx_survey_responses_user_id ON survey_responses(user_id);
+      CREATE INDEX IF NOT EXISTS idx_completion_codes_user_code ON completion_codes(user_id, completion_code);
+      CREATE INDEX IF NOT EXISTS idx_survey_submissions_user_id ON survey_submissions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_survey_submissions_status ON survey_submissions(status);
+      CREATE INDEX IF NOT EXISTS idx_survey_redemptions_user_id ON survey_redemptions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_survey_redemptions_status ON survey_redemptions(status);
+      CREATE INDEX IF NOT EXISTS idx_survey_audit_target ON survey_audit_log(target_type, target_id);
+    `);
+
     // Create fake_members table
     await client.query(`
       CREATE TABLE IF NOT EXISTS fake_members (
@@ -2240,6 +2370,72 @@ function calculateNetWithdrawal(amount) {
 // Format currency
 function formatCurrency(amount) {
   return `$${parseFloat(amount).toFixed(2)}`;
+}
+
+
+const SURVEY_CODE_EXPIRY_HOURS = 24;
+const SURVEY_REDEMPTION_LEVELS = [75, 100, 300];
+
+function normalizeSurveyId(input = '') {
+  return input.trim().toUpperCase();
+}
+
+function generateCompletionCode(memberId) {
+  const randomPart = crypto.randomBytes(3).toString('hex').toUpperCase();
+  return `SURV-${memberId}-${randomPart}`;
+}
+
+async function logSurveyAudit(actorId, actorType, action, targetType, targetId, metadata = {}) {
+  try {
+    await pool.query(
+      `INSERT INTO survey_audit_log (actor_id, actor_type, action, target_type, target_id, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+      [actorId, actorType, action, targetType, targetId, JSON.stringify(metadata || {})]
+    );
+  } catch (error) {
+    console.error('Error writing survey audit log:', error.message);
+  }
+}
+
+async function generateSurveyId() {
+  const result = await pool.query(`SELECT COUNT(*)::int AS total FROM surveys`);
+  const next = (result.rows[0]?.total || 0) + 1;
+  return `SURVEY-${String(next).padStart(2, '0')}`;
+}
+
+async function generateQuestionId(surveyId) {
+  const result = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM survey_questions WHERE survey_id = $1`,
+    [surveyId]
+  );
+  const next = (result.rows[0]?.total || 0) + 1;
+  return `${surveyId}-Q${String(next).padStart(2, '0')}`;
+}
+
+async function ensureSurveyPointsRow(userId) {
+  await pool.query(
+    `INSERT INTO survey_points (user_id, total_points_earned, points_redeemed, available_points)
+     VALUES ($1, 0, 0, 0)
+     ON CONFLICT (user_id) DO NOTHING`,
+    [userId]
+  );
+}
+
+async function getSurveyPoints(userId) {
+  await ensureSurveyPointsRow(userId);
+  const result = await pool.query('SELECT * FROM survey_points WHERE user_id = $1', [userId]);
+  return result.rows[0] || { total_points_earned: 0, points_redeemed: 0, available_points: 0 };
+}
+
+async function getLatestPendingSubmission(userId) {
+  const result = await pool.query(
+    `SELECT * FROM survey_submissions
+     WHERE user_id = $1 AND status = 'pending_review'
+     ORDER BY submission_time DESC
+     LIMIT 1`,
+    [userId]
+  );
+  return result.rows[0] || null;
 }
 
 const SHAREHOLDER_STATUS = {
@@ -4790,6 +4986,300 @@ bot.onText(/\/login/, async (msg) => {
   );
 });
 
+// ==================== SURVEY SYSTEM COMMANDS ====================
+
+bot.onText(/\/createsurvey/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  adminSessions[chatId] = { step: 'survey_create_title', data: {} };
+  await bot.sendMessage(chatId, '📝 Enter survey title:');
+});
+
+bot.onText(/\/addquestion (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const surveyId = normalizeSurveyId(match[1]);
+  const survey = await pool.query('SELECT * FROM surveys WHERE survey_id = $1 AND is_active = TRUE', [surveyId]);
+  if (!survey.rows.length) return bot.sendMessage(chatId, `❌ Survey ${surveyId} not found or inactive.`);
+
+  adminSessions[chatId] = { step: 'survey_add_question_text', data: { surveyId } };
+  await bot.sendMessage(chatId, `Enter question text for ${surveyId}:`);
+});
+
+bot.onText(/\/listsurveys/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const result = await pool.query('SELECT survey_id, title, question_count, question_type, is_active FROM surveys ORDER BY created_at DESC');
+  if (!result.rows.length) return bot.sendMessage(chatId, 'No surveys found.');
+
+  let message = `📋 **Active Surveys**
+
+`;
+  result.rows.forEach((row, idx) => {
+    message += `${idx + 1}. ${row.survey_id} - ${row.title}
+`;
+    message += `   Questions: ${row.question_count} | Type: ${row.question_type} | Status: ${row.is_active ? 'ACTIVE' : 'INACTIVE'}
+`;
+  });
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/deletesurvey (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const surveyId = normalizeSurveyId(match[1]);
+  const result = await pool.query('DELETE FROM surveys WHERE survey_id = $1 RETURNING survey_id', [surveyId]);
+  if (!result.rows.length) return bot.sendMessage(chatId, `❌ Survey ${surveyId} not found.`);
+
+  await logSurveyAudit(chatId.toString(), 'admin', 'delete_survey', 'survey', surveyId, {});
+  await bot.sendMessage(chatId, `✅ Survey ${surveyId} deleted.`);
+});
+
+bot.onText(/\/survey$/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getUserByChatId(chatId);
+  if (!user) return bot.sendMessage(chatId, '❌ Please login first using /login.');
+
+  const surveys = await pool.query('SELECT survey_id, title FROM surveys WHERE is_active = TRUE ORDER BY created_at DESC');
+  if (!surveys.rows.length) return bot.sendMessage(chatId, 'No active surveys available.');
+
+  userSessions[chatId] = { step: 'survey_select', data: { memberId: user.member_id, surveys: surveys.rows } };
+
+  let message = `📋 **Available Surveys**
+
+`;
+  surveys.rows.forEach((s, i) => { message += `${i + 1}. ${s.title} (${s.survey_id})
+`; });
+  message += `\nReply with the survey number to start.`;
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/submitcode/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getUserByChatId(chatId);
+  if (!user) return bot.sendMessage(chatId, '❌ Please login first using /login.');
+
+  userSessions[chatId] = { step: 'survey_submit_code', data: { memberId: user.member_id } };
+  await bot.sendMessage(chatId, 'Enter your completion code:');
+});
+
+bot.onText(/\/surveydashboard/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getUserByChatId(chatId);
+  if (!user) return bot.sendMessage(chatId, '❌ Please login first using /login.');
+
+  const [completed, pending, points, recent] = await Promise.all([
+    pool.query('SELECT COUNT(*)::int AS total FROM survey_responses WHERE user_id = $1', [user.member_id]),
+    pool.query(`SELECT COUNT(*)::int AS total FROM survey_submissions WHERE user_id = $1 AND status = 'pending_review'`, [user.member_id]),
+    getSurveyPoints(user.member_id),
+    pool.query(`SELECT completion_code, status FROM survey_submissions WHERE user_id = $1 ORDER BY submission_time DESC LIMIT 5`, [user.member_id])
+  ]);
+
+  let message = `📊 **Survey Dashboard**
+
+`;
+  message += `User Name: ${user.name}
+Member ID: ${user.member_id}
+
+`;
+  message += `Survey Activity
+- Surveys completed: ${completed.rows[0].total}
+- Pending review submissions: ${pending.rows[0].total}
+
+`;
+  message += `Points Summary
+- Total points earned: ${points.total_points_earned}
+- Points redeemed: ${points.points_redeemed}
+- Available points: ${points.available_points}
+
+`;
+  message += `Recent Completion Codes\n`;
+  if (!recent.rows.length) message += `- No submissions yet\n`;
+  recent.rows.forEach(row => { message += `- ${row.completion_code} (${row.status})
+`; });
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/surveyresponses (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const memberId = match[1].trim().toUpperCase();
+  const rows = await pool.query(
+    `SELECT survey_id, completion_code, status, points_awarded, submission_time, responses
+     FROM survey_submissions WHERE user_id = $1 ORDER BY submission_time DESC LIMIT 5`,
+    [memberId]
+  );
+
+  if (!rows.rows.length) return bot.sendMessage(chatId, `No survey submissions for ${memberId}.`);
+
+  let message = `🧾 **Survey Responses: ${memberId}**
+
+`;
+  rows.rows.forEach((row, idx) => {
+    message += `${idx + 1}. ${row.survey_id} | ${row.completion_code}
+`;
+    message += `Status: ${row.status} | Points: ${row.points_awarded}
+`;
+    message += `Submitted: ${new Date(row.submission_time).toLocaleString()}
+`;
+    const answers = Array.isArray(row.responses) ? row.responses.slice(0, 3) : [];
+    answers.forEach((a, i) => { message += `  Q${i + 1}: ${a.answer} (${a.result})
+`; });
+    message += `\n`;
+  });
+
+  await bot.sendMessage(chatId, message);
+});
+
+bot.onText(/\/approvepoints (.+?) (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const memberId = match[1].trim().toUpperCase();
+  const amount = parseInt(match[2], 10);
+  const pending = await getLatestPendingSubmission(memberId);
+  if (!pending) return bot.sendMessage(chatId, `❌ No pending submission found for ${memberId}.`);
+
+  await ensureSurveyPointsRow(memberId);
+  await pool.query('BEGIN');
+  try {
+    await pool.query(
+      `UPDATE survey_points
+       SET total_points_earned = total_points_earned + $2,
+           available_points = available_points + $2,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $1`,
+      [memberId, amount]
+    );
+
+    await pool.query(
+      `UPDATE survey_submissions
+       SET status = 'approved', points_awarded = $2, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $3
+       WHERE id = $1`,
+      [pending.id, amount, chatId.toString()]
+    );
+
+    await pool.query(
+      `UPDATE completion_codes
+       SET status = 'used', used_at = CURRENT_TIMESTAMP
+       WHERE completion_code = $1`,
+      [pending.completion_code]
+    );
+
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
+
+  await logSurveyAudit(chatId.toString(), 'admin', 'approve_points', 'submission', pending.id.toString(), { memberId, amount });
+  await sendUserNotification(memberId, `✅ Your survey submission has been reviewed.
+You have been awarded ${amount} points.`);
+  await bot.sendMessage(chatId, `✅ Approved ${amount} points for ${memberId}.`);
+});
+
+bot.onText(/\/rejectpoints (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const memberId = match[1].trim().toUpperCase();
+  const pending = await getLatestPendingSubmission(memberId);
+  if (!pending) return bot.sendMessage(chatId, `❌ No pending submission found for ${memberId}.`);
+
+  await pool.query(
+    `UPDATE survey_submissions
+     SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = $2
+     WHERE id = $1`,
+    [pending.id, chatId.toString()]
+  );
+
+  await logSurveyAudit(chatId.toString(), 'admin', 'reject_points', 'submission', pending.id.toString(), { memberId });
+  await sendUserNotification(memberId, '❌ Your survey submission was reviewed but points were not awarded.');
+  await bot.sendMessage(chatId, `✅ Rejected pending submission for ${memberId}.`);
+});
+
+bot.onText(/\/redeempoints/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getUserByChatId(chatId);
+  if (!user) return bot.sendMessage(chatId, '❌ Please login first using /login.');
+
+  userSessions[chatId] = { step: 'survey_redeem_select', data: { memberId: user.member_id } };
+  await bot.sendMessage(chatId, `Select redemption points:\n1) 75\n2) 100\n3) 300`);
+});
+
+bot.onText(/\/approveredemption (.+?) (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const memberId = match[1].trim().toUpperCase();
+  const points = parseInt(match[2], 10);
+  const req = await pool.query(
+    `SELECT * FROM survey_redemptions
+     WHERE user_id = $1 AND points_requested = $2 AND status = 'pending_admin_approval'
+     ORDER BY request_time ASC LIMIT 1`,
+    [memberId, points]
+  );
+  if (!req.rows.length) return bot.sendMessage(chatId, '❌ Matching pending redemption request not found.');
+
+  const pointsRow = await getSurveyPoints(memberId);
+  if (parseInt(pointsRow.available_points || 0, 10) < points) {
+    return bot.sendMessage(chatId, '❌ User no longer has enough available points.');
+  }
+
+  await pool.query('BEGIN');
+  try {
+    await pool.query(
+      `UPDATE survey_points
+       SET available_points = available_points - $2,
+           points_redeemed = points_redeemed + $2,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $1`,
+      [memberId, points]
+    );
+    await pool.query(
+      `UPDATE survey_redemptions
+       SET status = 'approved', decided_at = CURRENT_TIMESTAMP, decided_by = $2
+       WHERE id = $1`,
+      [req.rows[0].id, chatId.toString()]
+    );
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
+
+  await logSurveyAudit(chatId.toString(), 'admin', 'approve_redemption', 'redemption', req.rows[0].id.toString(), { memberId, points });
+  await sendUserNotification(memberId, '✅ Your redemption request has been approved.');
+  await bot.sendMessage(chatId, `✅ Approved ${points}-point redemption for ${memberId}.`);
+});
+
+bot.onText(/\/resetsurvey (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return bot.sendMessage(chatId, '🚫 Access denied.');
+
+  const memberId = match[1].trim().toUpperCase();
+  await pool.query('BEGIN');
+  try {
+    await pool.query('DELETE FROM survey_submissions WHERE user_id = $1', [memberId]);
+    await pool.query('DELETE FROM completion_codes WHERE user_id = $1', [memberId]);
+    await pool.query('DELETE FROM survey_responses WHERE user_id = $1', [memberId]);
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
+
+  await logSurveyAudit(chatId.toString(), 'admin', 'reset_survey_user', 'user', memberId, {});
+  await bot.sendMessage(chatId, `✅ Survey completion records reset for ${memberId}.`);
+});
+
+// ==================== END SURVEY SYSTEM COMMANDS ====================
+
 // ==================== MESSAGE HANDLERS ====================
 
 // Handle all text messages
@@ -4804,6 +5294,217 @@ bot.on('message', async (msg) => {
   if (!session) return;
   
   try {
+    // Survey: user selects survey
+    if (session.step === 'survey_select') {
+      const choice = parseInt(text.trim(), 10);
+      const surveys = session.data.surveys || [];
+      if (isNaN(choice) || choice < 1 || choice > surveys.length) {
+        await bot.sendMessage(chatId, `❌ Enter a valid survey number (1-${surveys.length}).`);
+        return;
+      }
+
+      const picked = surveys[choice - 1];
+      const existing = await pool.query(
+        'SELECT id FROM survey_responses WHERE user_id = $1 AND survey_id = $2 LIMIT 1',
+        [session.data.memberId, picked.survey_id]
+      );
+      if (existing.rows.length) {
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId, '❌ You have already completed this survey. Ask admin to reset via /resetsurvey.');
+        return;
+      }
+
+      const questions = await pool.query(
+        'SELECT question_id, question_text, answer_options, correct_answer FROM survey_questions WHERE survey_id = $1 ORDER BY created_at ASC',
+        [picked.survey_id]
+      );
+
+      if (!questions.rows.length) {
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId, '❌ This survey has no questions yet.');
+        return;
+      }
+
+      session.step = 'survey_answering';
+      session.data.surveyId = picked.survey_id;
+      session.data.surveyTitle = picked.title;
+      session.data.questions = questions.rows;
+      session.data.currentQuestion = 0;
+      session.data.responses = [];
+
+      const q = questions.rows[0];
+      let prompt = `Question 1/${questions.rows.length}\n${q.question_text}\n`;
+      const options = Array.isArray(q.answer_options) ? q.answer_options : [];
+      if (options.length) {
+        options.forEach((opt, idx) => {
+          const letter = String.fromCharCode(65 + idx);
+          prompt += `\n${letter}) ${opt}`;
+        });
+      }
+      await bot.sendMessage(chatId, prompt);
+      return;
+    }
+    else if (session.step === 'survey_answering') {
+      const idx = session.data.currentQuestion;
+      const questions = session.data.questions || [];
+      const q = questions[idx];
+      if (!q) {
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId, '❌ Survey session expired. Please run /survey again.');
+        return;
+      }
+
+      const answer = text.trim();
+      const isCorrect = answer.toLowerCase() === (q.correct_answer || '').toLowerCase();
+      session.data.responses.push({
+        question_id: q.question_id,
+        question: q.question_text,
+        answer,
+        correct_answer: q.correct_answer,
+        result: isCorrect ? 'Correct' : 'Wrong'
+      });
+
+      await bot.sendMessage(chatId, isCorrect ? 'Correct' : 'Wrong');
+
+      session.data.currentQuestion += 1;
+      if (session.data.currentQuestion >= questions.length) {
+        const score = session.data.responses.filter(r => r.result === 'Correct').length;
+        const completionCode = generateCompletionCode(session.data.memberId);
+
+        const responseInsert = await pool.query(
+          `INSERT INTO survey_responses (user_id, survey_id, responses, score, total_questions, completion_code)
+           VALUES ($1, $2, $3::jsonb, $4, $5, $6) RETURNING id`,
+          [
+            session.data.memberId,
+            session.data.surveyId,
+            JSON.stringify(session.data.responses),
+            score,
+            questions.length,
+            completionCode
+          ]
+        );
+
+        const expiresAtQuery = `CURRENT_TIMESTAMP + INTERVAL '${SURVEY_CODE_EXPIRY_HOURS} hours'`;
+        await pool.query(
+          `INSERT INTO completion_codes (completion_code, user_id, survey_id, response_id, status, expires_at)
+           VALUES ($1, $2, $3, $4, 'generated', ${expiresAtQuery})`,
+          [completionCode, session.data.memberId, session.data.surveyId, responseInsert.rows[0].id]
+        );
+
+        await logSurveyAudit(session.data.memberId, 'user', 'complete_survey', 'survey', session.data.surveyId, { completionCode, score });
+
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId,
+          `✅ Survey completed successfully.\n\n` +
+          `Your completion code is:\n${completionCode}\n\n` +
+          `Use /submitcode to submit your completion code for points review.`
+        );
+        return;
+      }
+
+      const next = questions[session.data.currentQuestion];
+      let prompt = `Question ${session.data.currentQuestion + 1}/${questions.length}\n${next.question_text}\n`;
+      const options = Array.isArray(next.answer_options) ? next.answer_options : [];
+      if (options.length) {
+        options.forEach((opt, optionIdx) => {
+          const letter = String.fromCharCode(65 + optionIdx);
+          prompt += `\n${letter}) ${opt}`;
+        });
+      }
+      await bot.sendMessage(chatId, prompt);
+      return;
+    }
+    else if (session.step === 'survey_submit_code') {
+      const completionCode = text.trim().toUpperCase();
+      const codeRes = await pool.query(
+        `SELECT * FROM completion_codes
+         WHERE completion_code = $1`,
+        [completionCode]
+      );
+
+      if (!codeRes.rows.length) {
+        await bot.sendMessage(chatId, '❌ Completion code not found.');
+        return;
+      }
+
+      const code = codeRes.rows[0];
+      if (code.user_id !== session.data.memberId) {
+        await bot.sendMessage(chatId, '❌ This completion code does not belong to your account.');
+        return;
+      }
+      if (code.status === 'used') {
+        await bot.sendMessage(chatId, '❌ This completion code has already been used.');
+        return;
+      }
+
+      const expiryCheck = await pool.query('SELECT CURRENT_TIMESTAMP > $1::timestamp AS expired', [code.expires_at]);
+      if (expiryCheck.rows[0].expired) {
+        await bot.sendMessage(chatId, '❌ This completion code has expired (24 hour validity).');
+        return;
+      }
+
+      const existingSubmission = await pool.query(
+        `SELECT id FROM survey_submissions WHERE completion_code = $1 LIMIT 1`,
+        [completionCode]
+      );
+      if (existingSubmission.rows.length) {
+        await bot.sendMessage(chatId, '❌ This completion code is already submitted.');
+        return;
+      }
+
+      const responseRes = await pool.query(
+        `SELECT id, responses FROM survey_responses WHERE completion_code = $1 AND user_id = $2 LIMIT 1`,
+        [completionCode, session.data.memberId]
+      );
+      if (!responseRes.rows.length) {
+        await bot.sendMessage(chatId, '❌ Response record missing for this code.');
+        return;
+      }
+
+      await pool.query(
+        `INSERT INTO survey_submissions (user_id, completion_code, survey_id, response_id, responses, status)
+         VALUES ($1, $2, $3, $4, $5::jsonb, 'pending_review')`,
+        [session.data.memberId, completionCode, code.survey_id, responseRes.rows[0].id, JSON.stringify(responseRes.rows[0].responses)]
+      );
+
+      await pool.query(
+        `UPDATE completion_codes SET status = 'submitted' WHERE completion_code = $1`,
+        [completionCode]
+      );
+
+      await logSurveyAudit(session.data.memberId, 'user', 'submit_completion_code', 'completion_code', completionCode, { surveyId: code.survey_id });
+
+      delete userSessions[chatId];
+      await bot.sendMessage(chatId, '✅ Submission received. Status: PENDING_REVIEW.');
+      return;
+    }
+    else if (session.step === 'survey_redeem_select') {
+      const choice = parseInt(text.trim(), 10);
+      if (isNaN(choice) || choice < 1 || choice > SURVEY_REDEMPTION_LEVELS.length) {
+        await bot.sendMessage(chatId, '❌ Invalid option. Choose 1, 2, or 3.');
+        return;
+      }
+
+      const pointsToRedeem = SURVEY_REDEMPTION_LEVELS[choice - 1];
+      const points = await getSurveyPoints(session.data.memberId);
+      if (parseInt(points.available_points || 0, 10) < pointsToRedeem) {
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId, `❌ Insufficient points. Available: ${points.available_points}`);
+        return;
+      }
+
+      await pool.query(
+        `INSERT INTO survey_redemptions (user_id, points_requested, status)
+         VALUES ($1, $2, 'pending_admin_approval')`,
+        [session.data.memberId, pointsToRedeem]
+      );
+
+      await logSurveyAudit(session.data.memberId, 'user', 'request_redemption', 'redemption', session.data.memberId, { points: pointsToRedeem });
+      delete userSessions[chatId];
+      await bot.sendMessage(chatId, `✅ Redemption request for ${pointsToRedeem} points created. Status: PENDING_ADMIN_APPROVAL.`);
+      return;
+    }
+
     // Handle forgot password method selection
     if (session.step === 'forgot_password_method') {
       const choice = parseInt(text);
@@ -7811,9 +8512,95 @@ bot.on('message', async (msg) => {
   
   const adminSession = adminSessions[chatId];
   
-  if (adminSession && adminSession.step === 'admin_message_user') {
+  if (!adminSession) return;
+
+  if (adminSession.step === 'admin_message_user') {
     await sendDirectMessageToUser(chatId, adminSession.targetUserId, text);
     delete adminSessions[chatId];
+    return;
+  }
+
+  if (adminSession.step === 'survey_create_title') {
+    adminSession.data.title = text.trim();
+    adminSession.step = 'survey_create_count';
+    await bot.sendMessage(chatId, 'Enter number of questions:');
+    return;
+  }
+
+  if (adminSession.step === 'survey_create_count') {
+    const count = parseInt(text.trim(), 10);
+    if (isNaN(count) || count <= 0) {
+      await bot.sendMessage(chatId, '❌ Enter a valid positive number.');
+      return;
+    }
+
+    adminSession.data.questionCount = count;
+    adminSession.step = 'survey_create_type';
+    await bot.sendMessage(chatId, 'Question type? Reply with: multiple_choice OR text');
+    return;
+  }
+
+  if (adminSession.step === 'survey_create_type') {
+    const qType = text.trim().toLowerCase();
+    if (qType !== 'multiple_choice' && qType !== 'text') {
+      await bot.sendMessage(chatId, '❌ Reply with exactly: multiple_choice OR text');
+      return;
+    }
+
+    const surveyId = await generateSurveyId();
+    await pool.query(
+      `INSERT INTO surveys (survey_id, title, question_count, question_type, created_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [surveyId, adminSession.data.title, adminSession.data.questionCount, qType, chatId.toString()]
+    );
+
+    await logSurveyAudit(chatId.toString(), 'admin', 'create_survey', 'survey', surveyId, {
+      title: adminSession.data.title,
+      questionCount: adminSession.data.questionCount,
+      questionType: qType
+    });
+
+    delete adminSessions[chatId];
+    await bot.sendMessage(chatId, `✅ Survey created successfully.\nSurvey ID: ${surveyId}`);
+    return;
+  }
+
+  if (adminSession.step === 'survey_add_question_text') {
+    adminSession.data.questionText = text.trim();
+    adminSession.step = 'survey_add_question_options';
+    await bot.sendMessage(chatId, 'Enter answer options separated by | (or type SKIP for text question):');
+    return;
+  }
+
+  if (adminSession.step === 'survey_add_question_options') {
+    const raw = text.trim();
+    adminSession.data.answerOptions = raw.toUpperCase() === 'SKIP' ? [] : raw.split('|').map(v => v.trim()).filter(Boolean);
+    adminSession.step = 'survey_add_question_correct';
+    await bot.sendMessage(chatId, 'Enter correct answer:');
+    return;
+  }
+
+  if (adminSession.step === 'survey_add_question_correct') {
+    const correctAnswer = text.trim();
+    const questionId = await generateQuestionId(adminSession.data.surveyId);
+
+    await pool.query(
+      `INSERT INTO survey_questions (question_id, survey_id, question_text, answer_options, correct_answer)
+       VALUES ($1, $2, $3, $4::jsonb, $5)`,
+      [
+        questionId,
+        adminSession.data.surveyId,
+        adminSession.data.questionText,
+        JSON.stringify(adminSession.data.answerOptions || []),
+        correctAnswer
+      ]
+    );
+
+    await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId });
+
+    delete adminSessions[chatId];
+    await bot.sendMessage(chatId, `✅ Question saved with ID ${questionId}.`);
+    return;
   }
 });
 
