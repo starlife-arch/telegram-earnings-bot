@@ -8574,26 +8574,56 @@ bot.on('message', async (msg) => {
 
   if (adminSession.step === 'survey_add_question_options') {
     const raw = text.trim();
-    const normalizedRaw = raw.toUpperCase();
+    const normalizedToken = raw.toUpperCase().replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim();
     const skipTokens = new Set(['SKIP', 'SKIP FOR TEXT QUESTION']);
-    adminSession.data.answerOptions = skipTokens.has(normalizedRaw)
+
+    adminSession.data.answerOptions = skipTokens.has(normalizedToken)
       ? []
       : raw.split('|').map(v => v.trim()).filter(Boolean);
+
+    const hasOptions = Array.isArray(adminSession.data.answerOptions) && adminSession.data.answerOptions.length > 0;
+    if (!hasOptions) {
+      const questionId = await generateQuestionId(adminSession.data.surveyId);
+      await pool.query(
+        `INSERT INTO survey_questions (question_id, survey_id, question_text, answer_options, correct_answer)
+         VALUES ($1, $2, $3, $4::jsonb, $5)`,
+        [
+          questionId,
+          adminSession.data.surveyId,
+          adminSession.data.questionText,
+          JSON.stringify([]),
+          'N/A'
+        ]
+      );
+
+      await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId });
+
+      delete adminSessions[chatId];
+      await bot.sendMessage(chatId, `✅ Text question saved with ID ${questionId}.`);
+      return;
+    }
+
     adminSession.step = 'survey_add_question_correct';
     await bot.sendMessage(chatId, 'Enter correct answer (or type SKIP if there is no single correct answer):');
     return;
   }
 
   if (adminSession.step === 'survey_add_question_correct') {
-    const raw = text.trim();
-    const normalizedRaw = raw.toUpperCase();
-    const skipTokens = new Set(['SKIP', 'SKIP FOR TEXT QUESTION']);
-    const hasOptions = Array.isArray(adminSession.data.answerOptions) && adminSession.data.answerOptions.length > 0;
-    const correctAnswer = !hasOptions && skipTokens.has(normalizedRaw) ? 'N/A' : raw;
+    const correctAnswer = text.trim();
 
     if (!correctAnswer) {
-      await bot.sendMessage(chatId, '❌ Correct answer cannot be empty. Type SKIP only for text questions without a fixed answer.');
+      await bot.sendMessage(chatId, '❌ Correct answer cannot be empty.');
       return;
+    }
+
+    const hasOptions = Array.isArray(adminSession.data.answerOptions) && adminSession.data.answerOptions.length > 0;
+    if (hasOptions) {
+      const normalizedAnswer = correctAnswer.toLowerCase();
+      const answerExists = adminSession.data.answerOptions.some(option => option.toLowerCase() === normalizedAnswer);
+      if (!answerExists) {
+        await bot.sendMessage(chatId, '❌ Correct answer must exactly match one of the options.');
+        return;
+      }
     }
 
     const questionId = await generateQuestionId(adminSession.data.surveyId);
